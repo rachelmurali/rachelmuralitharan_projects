@@ -2,21 +2,6 @@
 
 #  Description: Creates an expression tree and performs recursive functions on it such as evaluate, pre-order, and post-order.
 
-#  Student Name: Rachel Muralitharan
-
-#  Student UT EID: rsm3256
-
-#  Partner Name: Marissa Perry
-
-#  Partner UT EID: mnp944
-
-#  Course Name: CS 313E
-
-#  Unique Number: 86439
-
-#  Date Created: 6/29/2022
-
-#  Date Last Modified: 7/7/2022
 
 import sys
 
