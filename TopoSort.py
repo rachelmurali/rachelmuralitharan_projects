@@ -1,13 +1,6 @@
 #  File: TopoSort.py
 #  Description: Reads in graph information from a text file and sorts the graph data after determining if the graph has a cycle. 
-#  Student Name: Marissa Perry
-#  Student UT EID: mnp944
-#  Partner Name: Rachel Muralitharan
-#  Partner UT EID: rsm3256
-#  Course Name: CS 313E
-#  Unique Number: 86439
-#  Date Created: 7/11/22
-#  Date Last Modified: 7/16/22
+
 
 import sys
 import random
@@ -381,3 +374,4 @@ def main():
         print(vertex_list)
     
 main()
+
