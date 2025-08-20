@@ -1,9 +1,6 @@
 #  File: Secret.py
 #  Description: Rotates a linked list to the right (clockwise) rot places times number of times 
-#  Student Name:
-#  Student UT EID:
-#  Course Name: CS 313E
-#  Unique Number: 
+
 import sys
 class Link (object):
     # do not change this constructor
@@ -167,3 +164,4 @@ def main():
     print(rotated)
 if __name__ == "__main__":
 """ 
+
