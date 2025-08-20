@@ -1,5 +1,5 @@
 ---
-title: "Potassium Answer_Rachel Muralitharan"
+title: "Potassium Analysis Drug Discovery"
 output:
   html_document:
     df_print: paged
@@ -187,4 +187,5 @@ ggplot(graph_df, aes(x = factor(treat), fill = factor(had_hyperkalemia))) +
 ``` 
 
 # Question 2 Answer:
+
 The logistic regression with interactions shows that the drug has a weaker effect on the presence of hyperkalemia in non-reference regions compared to the reference region. This was seen by the interaction term of treat:region being .34 and having a statistically significant p value. Additionally, as seen by the figure, the presence of hyperkalemia is more prevalent in region 1 treatment group(treat = 1) than region 2 treatment group (treat = 1).
