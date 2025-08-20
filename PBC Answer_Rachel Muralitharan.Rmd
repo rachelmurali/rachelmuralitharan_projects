@@ -1,0 +1,350 @@
+---
+title: "PBC Question_Rachel Muralitharan"
+output:
+  html_document:
+    df_print: paged
+date: "2025-03-27"
+---
+# Algorithm
+Question 1:
+
+1. Using variable descriptions of the pbc dataset, determine which variables are categorical and numerical.
+
+2. Divide the dataset into numerical and categorical data. For the numerical data, create a facet wrapped plot of histograms to check normality. To check the distribution of categorical data, create a facet wrapped plot of bar graphs to see how many instances are in each category. Histograms are used to visualize continous data while barplots are used for categorical data.
+
+3. To create a summary statistic table, run the Shapiro-Wilk test on each variable. This test determines the normality of the distribution of each variable. If the result is not significant, the variable is not skewed and thus mean and sd can be used to determine center and spread. If the result is significant, then use IQR and median as the distribution is skewed and outliers will make the mean and sd less accurate. 
+
+Question 2:
+
+1. Check conditions of Cox regression. Refer to text and comments below in question 2 section for explanation of conditions. 
+
+2. Create a cox model with time and status as the response variables and all other variables as explanatory variables.
+
+3. Calculate the c index as it is a shared metric between the cox and LASSO models that is used to evaluate the performance of survival analysis models. 
+
+4. Create a LASSO regression model and compare the C index between both models to determine the better model. Refer to analysis in Question 2 answer section for my final model selection. 
+
+Question 3:
+
+1. Create an observed time vs predicted time scatterplot to determine how well the predictions of the model were. This visual can be used to determine the model performance. 
+
+2. Create a visual of the hazard ratios with significant variables highlighted in red to convey the effect of each variable on survivability as well as which variables the LASSO model selected as significant. 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r, message = FALSE}
+# Load packages
+library(tidyverse)
+library(survival)
+```
+
+## Create the dataframe
+```{r}
+# load the survival package
+library(survival)
+data(pbc, package = 'survival')
+
+# omitting NA is done as the cox regression model does not use rows with missing data (not a complete case). Data could also be replaced with the mean, but that would not be appropriate for categorical variables.
+pbc_df <- na.omit(pbc)
+pbc_df
+```
+# Question 1: Assess normality of each variable and give summary statistics 
+
+## Analyzing Normality
+Categorical variables: sex, trt, status, ascites, edema, hepato, spiders, stage
+
+Numeric variables: age, time, albumin, alk.phos, ast, bili, chol, copper, platelet, protime, trig
+
+Exclusion: id was not used as a categorical or numeric variable as is an identifier
+```{r}
+# create a dataframe in long form with the numeric variables only to assess normality through visually viewing histogram
+pbc_num <- pbc_df %>%
+  select(age, time, albumin, alk.phos, ast, bili, chol, copper, platelet, protime, trig) %>%
+  gather(key = "variable", value = "value")
+
+# create a facet histogram plot with all numeric variables shown
+ggplot(pbc_num, aes(x = value)) + 
+  geom_histogram(bins = 10) + 
+  facet_wrap(~variable, scales = 'free_x') +
+  labs(title = "Histograms of Numeric Variables", x = "Value", y = "Frequency")
+
+# create a dataframe in long form with the categorical variables only to assess distribution through visually viewing bar plots
+pbc_cat <- pbc_df %>%
+  select(sex, trt, status, ascites, edema, hepato, spiders, stage) %>%
+  gather(key = "variable", value = "value")
+
+# create a facet bar plot with all categorical variables shown
+ggplot(pbc_cat, aes(x = value)) + 
+  geom_bar(fill = "skyblue", color = "black") +
+  facet_wrap(~variable, scales = 'free_x') + 
+  labs(title = "Bar plot of Categorical Variables", x = "Category", y = "Frequency")
+```
+
+## Printing Summary statistics
+Categorical variables: sex, trt, status, ascites, edema, hepato, spiders, stage
+
+Numeric variables: age, time, day, albumin, alk.phos, ast, bili, chol, copper, platelet, protime, trig
+```{r}
+pbc_num <- pbc_df %>%
+  select(age, time, albumin, alk.phos, ast, bili, chol, copper, platelet, protime, trig)
+
+summary_table <- data.frame(
+  Variable = character(),
+  Mean = numeric(),
+  SD = numeric(),
+  Median = numeric(),
+  IQR = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# Perform the Shapiro-Wilk normality test
+for (var in colnames(pbc_num))
+{
+  variable_data <- pbc_num[[var]]
+  p <- shapiro.test(variable_data)$p.value
+  if(p > .05)
+  {
+    # variable is normally distributed
+    mean <- mean(variable_data, na.rm = TRUE)
+    sd <- sd(variable_data, na.rm = TRUE)
+    median <- NA
+    iqr <- NA
+    normality <- 'normally distributed'
+  }
+  else
+  {
+    # variable is skewed
+    mean <- NA
+    sd <- NA 
+    median <- median(variable_data, na.rm = TRUE)
+    iqr <- IQR(variable_data, na.rm = TRUE)
+    normality <- 'skewed'
+  }
+  summary_table <- rbind(summary_table, data.frame(
+    Variable = var,
+    Mean = mean,
+    SD = sd,
+    Median = median,
+    IQR = iqr,
+    Normality = normality
+  ))
+}
+
+print(summary_table)  
+
+```
+# Question 2: Create a Cox regression then a LASSO regression
+
+## Cox proportional hazard analysis conditions
+Proportional hazard assumption, linearity of continuous variables checked in code
+Adequate sample size, non-informative censoring, and independence of survival times were also verified as per the data set
+Cox model exclusions: time and status excluded from the model as needed to determine mortality, id is excluded as is an identifier
+```{r}
+# fit the model on all variables except status and time as they are used to determine mortality and id as it is an identifier
+cox_model <- coxph(Surv(time, status) ~ sex + trt + ascites + edema + hepato + spiders + stage + age + albumin + 
+                     alk.phos + ast + bili + chol + copper + platelet + protime + trig, data = pbc_df)
+
+# 1) Check proportional hazards assumption: variables ast, chol, and trig fail this condition as p value < .05, indicating the hazard due to these variables is not proportional over time. However, the global p value passes.
+cox.zph(cox_model)
+
+# 2) Linearity of Continuous Variables: proves that continuous variables have a linear relationship with the log hazard
+martingale_residuals <- residuals(cox_model, type = "martingale")
+
+# identify only the rows of the dataset used in the model
+model_data <- pbc_df[complete.cases(pbc_df[, c("sex", "trt", "ascites", "edema", "hepato", "spiders", "stage", 
+                                               "age", "albumin", "alk.phos", "ast", "bili", "chol", "copper", 
+                                               "platelet", "protime", "trig")]), ]
+
+# identify only the rows of the dataset used in the model
+martingale_residuals_subset <- martingale_residuals[complete.cases(pbc_df[, c("sex", "trt", "ascites", "edema", 
+                                                                             "hepato", "spiders", "stage", "age", 
+                                                                             "albumin", "alk.phos", "ast", "bili", 
+                                                                             "chol", "copper", "platelet", 
+                                                                             "protime", "trig")])]
+
+# check linearity plot for each continuous variable to see if there is no pattern
+# time is excluded as that is the dependent variable
+# Numeric variables: age, albumin, alk.phos, ast, bili, chol, copper, platelet, protime, trig 
+plot(model_data$age, martingale_residuals_subset) # passed, no clear pattern
+plot(model_data$albumin, martingale_residuals_subset) # passed, no clear pattern
+plot(model_data$alk.phos, martingale_residuals_subset) # passed, no clear pattern
+plot(model_data$ast, martingale_residuals_subset) # passed, no clear pattern
+plot(model_data$bili, martingale_residuals_subset) # passed, no clear pattern
+plot(model_data$chol, martingale_residuals_subset) # passed, no clear pattern
+plot(model_data$copper, martingale_residuals_subset) # passed, no clear pattern
+plot(model_data$platelet, martingale_residuals_subset) # passed, no clear pattern
+plot(model_data$protime, martingale_residuals_subset) # passed, no clear pattern
+plot(model_data$trig, martingale_residuals_subset) # passed, no clear pattern
+```
+
+## Cox proportional hazard results
+```{r}
+# display the results of the model
+summary(cox_model)
+
+# create a variable for the coefficients of each variable in the model
+coefficients <- coef(cox_model)
+
+# print the model
+formula_str <- paste("log-hazard =",
+                     paste(names(coefficients), coefficients, sep="*", collapse=" + "))
+print(formula_str)
+```
+
+## Cox proportional hazard analysis
+In terms of the C-index, the model correctly ranks the survival times of two randomly chosen individuals 77.8% of the time, indicating the model has good discrimination ability between two individuals.
+The likelihood ratio of 93.2 is large, indicating that the full model is significantly a better fit than the null model.
+The p value is extremely small, indicating we can reject the null hypothesis that the model does not provide better predictions compared to the null model. 
+The wald test of 90/17 is large, indicating that the covariates in the model are significantly associated with the survival outcome.
+The Score Test result of 109.4 is very large, indicating that the covariates in the model explain a significant portion of the variation in survival times. 
+
+## LASSO Model
+```{r}
+library(glmnet)
+library(survival)
+
+# Ensure that time is numeric
+pbc_df$time <- as.numeric(pbc_df$time)
+
+# To fix errors in status variable of invalid characters
+pbc_df$status <- as.character(pbc_df$status)        # Convert status to character to handle
+pbc_df$status <- gsub("[^0-1]", NA, pbc_df$status)  # Replace any non-0 or non-1 characters with NA
+pbc_df$status <- as.numeric(pbc_df$status)  # Convert back to numeric
+
+# Remove rows with any NAs in the response or predictors
+pbc_clean <- pbc_df[complete.cases(pbc_df[, c("time", "status", "age", "sex", "trt", "ascites", "edema", "hepato", "spiders", "stage", "albumin", "alk.phos", "ast", "bili", "chol", "copper", "platelet", "protime", "trig")]), ]
+
+# Select predictors (exclude the response variable and ID)
+predictors <- pbc_clean[, c("age", "sex", "trt", "ascites", "edema", "hepato", "spiders", "stage", 
+                          "albumin", "alk.phos", "ast", "bili", "chol", "copper", "platelet", "protime", "trig")]
+
+# Convert factors to numeric
+predictors$sex <- factor(predictors$sex, levels = c("f", "m"), labels = c(0, 1))
+predictors$trt <- factor(predictors$trt)
+predictors$ascites <- factor(predictors$ascites)
+predictors$edema <- factor(predictors$edema)
+predictors$hepato <- factor(predictors$hepato)
+predictors$spiders <- factor(predictors$spiders)
+predictors$stage <- factor(predictors$stage)
+
+# Create response variable of time and status used to represent mortality
+response <- Surv(pbc_clean$time, pbc_clean$status)
+
+# Convert predictors to dummy variables 
+predictors_numeric <- model.matrix(~ . - 1, data = predictors)
+
+# Fit the LASSO model with cross-validation
+lasso_model <- cv.glmnet(predictors_numeric, response, family = "cox", alpha = 1)
+print(lasso_model)
+
+# Get predictions using the best lambda (lambda.min) from the LASSO model
+predicted_values <- predict(lasso_model, newx = predictors_numeric, type = "link", s = "lambda.min")
+
+# Convert predicted_values to a vector for use in survConcordance
+predicted_values <- as.vector(predicted_values)
+
+# Calculate the C-index using the survConcordance function
+cindex <- survConcordance(Surv(pbc_clean$time, pbc_clean$status) ~ predicted_values)
+
+# Print the C-index value
+cat("C-index:", cindex$concordance, "\n")
+```
+## Lasso model formula
+```{r}
+# Get coefficients at the best lambda (lambda.min)
+coefficients <- coef(lasso_model, s = "lambda.min")
+
+# Print the coefficients
+print("Coefficients at lambda.min:")
+print(coefficients)
+
+# print formula based on coefficients
+print('Surv(time, status) ~ -0.028882887(age) + 0.343383679(hepatol) + 0.149352289(bili) + 0.003771584(copper)')
+
+```
+## Lasso model conditions
+Proportional hazards assumption, linearity of variables, and residuals being independent where tested when analyzing conditions for the Cox regression model.
+
+## Lasso Model Results Analysis
+The min lambda represents the best lambda with the lowest deviance. This model uses 4 non-zero coefficients and provides a C-index of .8672525, indicating a better performance than the standard cox regression model.   
+
+# Question 2 Answer: 
+Overall, the better performing Model is the LASSO model. This is seen as in comparing the C-index between the two models, the LASSO model has a C-index of .8672525 while the Cox regression model has a C-index of .778. This indicates that the LASSO model using 4 key predictors instead of every explanatory variable available correctly ranks the survival times of two randomly chosen individuals 86.73% of the time while the cox regression model is only able to discern the difference 77.8% of the time.
+
+# Question 3: Visualize Results
+Visualizing results of LASSO model as the model was better fit than the cox regression
+
+## LASSO visualization 1 
+It is important to visualize the observed vs predicted time plot to see if there is a difference in the model's predicted survivability times and what is actually in the data. 
+
+**Analysis:** The negative slope of the line indicates that for longer survival times, the model consistently under predicts the survivability which is something researchers should be mindful of when using this model. 
+```{r}
+library(glmnet)
+library(survival)
+library(ggplot2)
+
+# Convert the predicted values to a vector
+predicted_values <- as.vector(predicted_values)
+
+# Create the observed vs predicted comparison plot
+# Create a data frame with observed and predicted values
+obs_pred_df <- data.frame(
+  observed = pbc_clean$time,
+  predicted = predicted_values
+)
+
+# Plot the observed vs predicted values
+ggplot(obs_pred_df, aes(x = observed, y = predicted)) +
+  geom_point(alpha = 0.5, color = "blue") +  # Scatter plot of observed vs predicted
+  geom_smooth(method = "lm", color = "red", linetype = "dashed") +  # Add linear regression line
+  labs(title = "Observed vs Predicted: LASSO Cox Model",
+       x = "Observed Time",
+       y = "Predicted Time") +
+  theme_minimal() +
+  theme(axis.title = element_text(size = 12), 
+        axis.text = element_text(size = 10))
+
+```
+
+## Lasso visualization 2
+This graph was chosen to visualize the results as it indicates the hazard ratios for each variable used in the LASSO regression. The significant hazard ratios, variables where the coefficient was not 0 and thus the variable was included in the model are shown in red. 
+
+**Analysis:** Hazard ratios = 1 indicate no effect on the hazard. Hazard ratios > 1 such as copper, bili, and hepato = 1 indicate increased risk. Hazard ratio < 1 indicate decreased hazard risk such as age. Seeing the plot allows the results of the model to be easily interpreted. For the categorical variable hepato, only the dummy coding of hepato = 1 was deemed to have a significant effect on survivability compared to all other versions of the variable. 
+```{r}
+library(survival)
+library(ggplot2)
+
+# Extract coefficients from the LASSO model
+coefficients <- coef(lasso_model, s = "lambda.min")  # Extract coefficients at the best lambda which is lambda.min
+coefficients <- as.matrix(coefficients)  # Convert to matrix 
+print(coefficients)
+
+# Get data for plotting (excluding intercept)
+coef_data <- data.frame(
+  variable = rownames(coefficients),
+  coef = coefficients[, 1])
+
+# Remove intercept term for the plot
+coef_data <- coef_data[coef_data$variable != "(Intercept)", ]
+
+# Specify which variables should be red
+red_vars <- c("age", "hepato1", "bili", "copper")
+
+# Create a new column for color assignment
+coef_data$color <- ifelse(coef_data$variable %in% red_vars, "red", "blue")
+
+# Create the plot using ggplot2
+ggplot(coef_data, aes(x = reorder(variable, coef), y = exp(coef))) +   # apply exp to coef to turn coefficients into hazard ratios
+  geom_point(aes(color = color), size = 3) +  # Hazard Ratios (log scale)
+  coord_flip() +  # Flip the axes for better readability
+  scale_color_identity() +  # Use the exact colors assigned
+  labs(title = "Hazard Ratios from LASSO Cox Model",
+       x = "Variable",
+       y = "Hazard Ratio") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 10),
+        axis.title = element_text(size = 12))
+```

@@ -1,0 +1,190 @@
+---
+title: "Potassium Answer_Rachel Muralitharan"
+output:
+  html_document:
+    df_print: paged
+date: "2025-03-30"
+---
+# Algorithm
+
+1. Read in data and merge all dataframes by master_id
+
+2. Select only relevant variables such as master_id, k, treat, and region. These variables were chosen as k represents the potassium level, treat represents whether or not the patient got the drug, and region specifies location. Master_id is needed to identify each patient. All other variables are not needed to answer the two questions relating treatment to hyperkalemia and then region and treatment to hyperkalemia. 
+
+3. Create a new variable labeling hyperkalemia cases based on whether k >= 5.5
+
+4. Use group_by functionality to merge all instances of a master_id into one row with had_hyperkalemia establishing whether the patient ever had hyperkalemia
+
+5. For question 1, run a chi-squared test and logistic regression to determine the interaction between the occurrence of hyperkalemia and the presence of treatment. This is done because chi-squared testing is appropriate for testing the relationship between two categorical variables and logistic regression is used for predictions when the response variable is binary.
+
+6. For question 2, run a logistic regression with Interaction. This is done as the interaction term between treat:region indicates whether there is a difference in the effect of the drug on hyperkalemia based on the region.
+
+7. Use bar plot analysis to visually see the different number of patients in each of the categories such as region 1 treatment no hyperkalemia, region 1 treatment hyperkalemia etc for a visual check. 
+
+## Read in master data files and file analysis
+Through randomly selecting master_ids and comparing data between the two files, I determined that the data in the master_data.dta file and master_data.sas7bdat files were equivalent.
+```{r}
+library(haven)
+library(dplyr)
+master_df <- read_dta("master_data.dta")
+print(length(master_df))
+
+# Replace 'path_to_file.sas7bdat' with the actual file path
+sas_df <- read_sas("master_data.sas7bdat")
+print(length(sas_df))
+
+random_master_ids <- sas_df |> sample_n(10) |> select(master_id) |> pull(master_id)
+
+# View the first few rows of the data frame
+sas_df |> filter(master_id %in% random_master_ids) == master_df |> filter(master_id %in% random_master_ids)
+
+#sas_df |> filter(master_id %in% random_master_ids)
+#master_df |> filter(master_id %in% random_master_ids)
+```
+
+## Read in data files and file analysis
+Determined that both file types have equivalent information. Will be using data from dta files throughout analysis for simplicity. 
+```{r}
+t05xc_df <- read_dta("t05xc.dta")
+print(length(t05xc_df))
+
+# Replace 'path_to_file.sas7bdat' with the actual file path
+sas_t05xc_df <- read_sas("t05xc.sas7bdat")
+print(length(sas_t05xc_df))
+
+# t05xc_df == sas_t05xc_df confirmed data was equivalent
+
+t016_df <- read_dta("t016.dta")
+print(length(t016_df))
+
+# Replace 'path_to_file.sas7bdat' with the actual file path
+sas_t016_df <- read_sas("t016.sas7bdat")
+print(length(sas_t016_df))
+
+# t016_df == sas_t016_df confirmed data was equivalent
+```
+
+## Merge Files and only keep relevent variables 
+Inclusions: k is needed as it conveys the amount of potassium to determine hyperkalemia status. Additionaly, treat and region are used as explanatory variables for the hyperkalemia status in question 1 and 2 so they are needed. Master_id is needed for patient identification. 
+Exclusions: All other variables are not needed to answer the two questions relating treatment to hyperkalemia and then region and treatment to hyperkalemia. 
+```{r}
+library(tidyr)
+
+# use merging based on master_id to combine 3 files into one
+merge_df <- merge(master_df, t05xc_df, by = "master_id", all = TRUE)
+full_df <- merge(merge_df, t016_df, by = "master_id", all = TRUE)
+drug_df <- full_df |> select(master_id, k, region, treat)
+
+# drop na as if NA for k value, no way to impute and therefore no classification applied
+# use if else to create new column to classify hyperkalemia based on k >= 5.5
+drug_df <- drug_df |> mutate(hyperkalemia = ifelse(k >= 5.5, TRUE, FALSE)) |> drop_na() 
+
+# use group_by summarize to identify whether the patient ever had hyperkalemia, also keep region and treat
+# change true false to yes no for ease of interpretation
+classified_df <- drug_df |> group_by(master_id) |> 
+  summarize(had_hyperkalemia = any(hyperkalemia == TRUE), region = first(region), treat = first(treat)) |>
+  mutate(had_hyperkalemia = ifelse(had_hyperkalemia == TRUE, "yes", "no"))
+
+classified_df
+```
+# Question 1: Is there evidence that the drug is associated with hyperkalemia? 
+H0: There is no difference in the prevalence of hyperkalemia between drug treated and non treated groups.
+
+HA: There is a difference in the prevalence of hyperkalemia between drug treated and non treated groups.
+
+The whole dataset and not a train-test split will be used as the objective is understand the relationship between two variables rather than predictive strength. To analyze the relationship between two variables, the more data included the better.
+
+Model: Chi-squared testing is appropriate for testing the relationship between two categorical variables and logistic regression is used for predictions when the response variable is binary.
+
+## Run Chi Squared Test
+Conditions are passed as the patients are indpendent of one another, the data is categorical, the expected frequency and sample size are both greater than 5, N > 20, and there are no empty cells
+```{r}
+library(ggplot2)
+
+# Create contingency table for had_hyperkalemia and treat
+contingency_table <- table(classified_df$had_hyperkalemia, classified_df$treat)
+
+# Print the contingency table
+print(contingency_table)
+
+# Run the Chi-Square test on the contingency table
+chi_square_test <- chisq.test(contingency_table)
+
+# Print the test result
+print(chi_square_test)
+
+# Create a bar plot of treat and had_hyperkalemia
+ggplot(classified_df, aes(x = factor(treat), fill = factor(had_hyperkalemia))) +
+  geom_bar(position = "dodge") +  # Dodge position for separate bars
+  labs(
+    title = "Treatment and Hyperkalemia (Without Region)",
+    x = "Treatment (0 = No, 1 = Yes)",
+    y = "Count",
+    fill = "Hyperkalemia (0 = No, 1 = Yes)") 
+```
+
+## Chi Squared results analysis:
+The p value is extremely small and the test statistic is extremely large for df = 1. Therefore, the null hypothesis that there is no association between treatment and hyperkalemia is rejected. This indicates that there is a statistically significant association between the presence of treatment and the occurance of hyperkalemia. 
+
+## Run Logistic Regression Test
+Conditions: binary dependent variables, independent observations as each patient is independent of the other, no multicollinarity as there is only one explanatory variable, sufficient sample size as at least 10 events per predictor, and linearity of logit were checked
+```{r}
+library(car)
+
+# Fit the logistic regression model
+log_df <- classified_df |>
+  mutate(had_hyperkalemia = ifelse(had_hyperkalemia == 'yes', 1, 0))
+
+model <- glm(had_hyperkalemia ~ treat, data = log_df, family = binomial)
+
+# check partial residuals for each predictor to assess linearity of logit
+crPlots(model)
+
+# get results of logistic regression 
+summary(model)
+```
+## Analysis of Logistic Regression
+The intercept is -2.44, indicating that without treatment(treat = 0), it is unlikely to have had hyperkalemia. The coefficient of .86811 for treat indicates that when the treatment is present(treat = 1), there is an increase in the log-odds of having hyperkalemia by .86811. In terms of the odds ratio, odds = e^0.86811, the odds of having hyperkalemia is 2.38 times higher for individuals with treatment. Lastly, the small p value indicates statistically significant results.
+
+# Overall Result for Question 1
+Due to logistic regression indicating the odds of having hyperkalemia is 2.38 times higher for individuals with the treatment and the chi squared testing indicating that there is a statistically significant association between the presence of treatment and the occurrence of hyperkalemia. It can be concluded that there is a statistically significant difference of the occurrence of hyperkalemia between treatment and no treatment groups.
+
+# Question 2: Does the drug effect depend on geographic region?
+H0: The relationship between drug use and hyperkalemia does not vary based on geographic region.
+
+HA: The relationship between drug use and hyperkalemia does vary based on geographic region. 
+
+Model: Plan to use logistic regression model with interaction. The interaction term between treat and region will determine whether the effect of the drug varies by region.
+
+## Logistic Regression Model with Interaction
+Conditions: binary dependent variables, independent observations as each patient is independent of the other, no multicollinarity as there is only one explanatory variable, sufficient sample size as at least 10 events per predictor were checked. Linearity of logit was checked in Question 1. 
+```{r}
+# Fit logistic regression model with interaction between treatment and region
+model <- glm(had_hyperkalemia ~ treat * region, family = binomial, data = log_df)
+summary(model)
+```
+## Logistic Regression Analysis: 
+The coefficient for the interaction term treat:region is -1.0727, which means that in regions other than the reference region, the effect of the treatment on the presence of hyperkalemia is reduced by 1.0727 units in terms of log odds. The odds ratio of e^-1.0727 is .34, indicating that the presence of hyperkalemia in the presence of treatment in non-reference regions is .34 times higher than the effect of the treatment in the reference region. The fact that this number is less than 1 indicates that the drug has a weakaer effect on the presence of hyperkalemia in non-reference regions compared to the reference region. Additionaly, as the p value is less than .05, this indicates that the interaction term is statistically significant. 
+
+# Visual analysis of difference between regions
+```{r}
+library(ggplot2)
+
+graph_df <- classified_df |>
+  mutate(region = ifelse(region == 1, 'Region 1', 'Region 2'))
+
+# Create a bar plot of treat and had_hyperkalemia by region
+ggplot(graph_df, aes(x = factor(treat), fill = factor(had_hyperkalemia))) +
+  geom_bar(position = "dodge") +  # Dodge position for separate bars
+  facet_wrap(~ region) +  # Create separate plots for each region
+  labs(
+    title = "Treatment and Hyperkalemia by Region",
+    x = "Treatment (0 = No, 1 = Yes)",
+    y = "Count",
+    fill = "Hyperkalemia (0 = No, 1 = Yes)"
+  ) +
+  theme_minimal()
+``` 
+
+# Question 2 Answer:
+The logistic regression with interactions shows that the drug has a weaker effect on the presence of hyperkalemia in non-reference regions compared to the reference region. This was seen by the interaction term of treat:region being .34 and having a statistically significant p value. Additionally, as seen by the figure, the presence of hyperkalemia is more prevalent in region 1 treatment group(treat = 1) than region 2 treatment group (treat = 1).
