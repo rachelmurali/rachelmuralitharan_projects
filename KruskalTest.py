@@ -2,17 +2,6 @@
 
 #  Description: Code uses the unittest library to test the kruskal algorithm for creating a minimum spanning tree. 
 
-#  Student Name: Rachel Muralitharan
-
-#  Student UT EID: rsm3256
-
-#  Course Name: CS 313E
-
-#  Unique Number: 86439
-
-#  Date Created: 7/18/2022
-
-#  Date Last Modified: 7/18/2022
 
 import unittest
 
@@ -139,3 +128,4 @@ class TestKruskal(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
