@@ -1,0 +1,367 @@
+---
+title: "SDS 322E: Project 1 Report"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# loading tideverse and reading in needed files
+library(tidyverse)
+
+championships <- read_tsv("WCA_export_championships.tsv.bz2")
+
+competitions <- read_tsv("WCA_export_Competitions.tsv.bz2")
+
+continents <- read_tsv("WCA_export_Continents.tsv.bz2")
+
+countries <- read_tsv("WCA_export_Countries.tsv.bz2")
+
+persons <- read_tsv("WCA_export_Persons.tsv.bz2")
+
+rankssingle <- read_tsv("WCA_export_RanksSingle_333.tsv.bz2")
+
+results <- read_tsv("WCA_export_Results_333.tsv.bz2")
+```
+
+## Required Questions
+
+### Active Speed Cubers (Anya)
+
+How many active (3x3x3) speedcubers are there registered with the WCA? For this question an *active speeedcuber* is defined as any person registered in the WCA who has competed in at least two competitions in the years 2022--2024. 
+
+Answer: There are 50,181 active (3x3x3) speedcubers registered with the WCA. In other words, there are 50,181 observations, speedcubers, that participated in at least 2 competitions in the year 2022 or after as an active speedcuber is defined by this criteria.
+
+
+```{r}
+## With this code, I am creating a new object 'competitionsnew' with the 'id' variable renamed to 'competitionId,' using the left_join() function to join the 'results' and 'competitionsnew' tables, using the filter() function to only include observations where the competition year is greater than or equal to 2022, using the group_by() and summarize() functions to get the number of (i.e. count of) competitions for each speedcuber, and using the filter() function again to only include observations where the count is greater than or equal to 2.
+competitionsnew <- competitions |>
+  rename(competitionId = id) 
+
+resultsyears <- results |>
+  left_join(competitionsnew, by = "competitionId") 
+
+activesc <- resultsyears |>
+  filter(year >= 2022) |>
+  group_by(personName) |>
+  summarize(count = n()) 
+
+activesc |>
+  filter(count >= 2)
+
+```
+
+
+### World Records (Rachel)
+
+This question has two parts:
+
+1. Who holds the current world record single? On what date was this record set?
+
+Answer 1: The current world record single is held by Max Park, who set the record on 6/11/2023 as he is the most recent occurrence of a WR in regional Single Record. 
+
+```{r}
+# get all instances of world record from results table
+wr_results <- results |> filter(regionalSingleRecord == 'WR')  |>
+  rename(id = competitionId)
+
+# join results of WR and competitions in order to get date the record was set
+wr_results_competitions <- wr_results |> left_join(competitions, by = 'id')
+
+# unite month day year to create date variable, select only name and date
+# organize instances by date and keep most recent wr instance
+wr_results_competitions |> unite(Date, month, day, year, sep = '/') |>
+  select(Date, personName, regionalSingleRecord) |> 
+  arrange(desc(mdy(Date))) |> head(1)
+
+```
+
+2. Who *previously* held the world record single? On what date was this previous record set?
+
+Answer 2: The current world record single is held by Yusheng Du, who set the record on 11/24/2018 as he is the second most recent occurrence of a WR in regional Single Record. 
+
+```{r}
+# unite month day year to create date variable, select only name and date
+# organize instances by date and keep most recent two wr instances
+# use head(2) to get the second earliest instance of WR to determine who had the world record before the current world record holder
+wr_results_competitions |> unite(Date, month, day, year, sep = '/') |>
+  select(Date, personName, regionalSingleRecord) |> 
+  arrange(desc(mdy(Date))) |> head(2)
+
+```
+
+
+
+### Regional Rankings (Rachel)
+
+This question has two parts:
+
+1. Who is the top ranked male speedcuber (for single best time) in Australia? 
+
+Answer 1: The top ranked male speedcuber (single) in Australia is Jode Brewester. This means that in Australia, Jode Brewester is ranked 1 in the country in terms of best single solve time.
+
+```{r}
+# rename rankssingle column personId to id and assign to new object for merging
+new_rankssingle <- rankssingle |> rename(id = personId)
+
+# merge new rankssingle to persons by id through leftjoin to have person names in dataframe with rankings
+rank_persons <- new_rankssingle |> left_join(persons, by = 'id')
+
+# get highest ranked male cubder in Australia
+# filter new rank_persons object by country Id equal to Australia and gender is male
+# arrange by countryRank and keep only highest instance and relevant columns 
+rank_persons |> 
+  filter(countryId == 'Australia' & gender == 'm', countryRank == 1) |>
+  select(countryId, name, gender, countryRank)
+
+```
+
+
+2. Who is the top ranked female speedcuber (for single best time) in Europe?
+
+Answer 2: The top ranked female speedcuber (single) in Europe is Magdalena Pabisz. This is found as Magalena is the highest ranked female cuber from the European continent, meaning she has the best single solve time out of European females. 
+
+```{r}
+# make new object out of countries with id column renamed countryID and drop irrelevant columns
+new_countries <- countries |> rename(countryId = id) |> select(-name)
+
+# combine rank_persons data frame created previously with new_countries by countryId to have continent names
+rank_persons_continents <- rank_persons |> 
+  left_join(new_countries, by = 'countryId')
+
+# get top ranked female cuber in Europe
+# filter new rank_persons_continents object by continent Id equal to Europe and gender is female
+# arrange by continent Rank and keep only highest instance and relevant columns 
+rank_persons_continents |> 
+  filter(continentId == '_Europe' & gender == 'f') |>
+  arrange(continentRank) |>
+  head(1) |>
+  select(continentId, name, gender, continentRank)
+
+```
+
+
+### Time Until Sub-5 (Rachel)
+
+Having a time below 5 seconds is considered an elite achievement and most speedcubers have to complete a large number of solves before they can obtain a sub-5 second solve. 
+
+1. For the current top 10 speedcubers in the world (as recorded in the RanksSingle table), on average, how many solves did they have to do before achieving a sub-5 second solve?
+
+Answer 1: For the top 10 speedcubers, the mean solves until the cubers reach a sub 5 seconds solve is 511 solves. This indicates that on average, for the best ranked world cubers, it takes around 511 attempts to reach a solve under 5 seconds. 
+
+```{r}
+# filter worldRank <= 10 to get top 10 ranked world players from rankssingle and deselect unimportant columns
+# combine filtered rankssingle with results object by personId
+# combine dataset with inner join again by competitionId = id to get full dataset with rankssingle, results, and competitions of top 10 players
+# unite month, day, year columns to single variable date and mutate to covert the combined variable to Date form
+# add columns of values 1 to 5 to one column to get solves per round in one column
+# arrange based on Dates, then competition, then roundTypeId to get the rows organizes by earliest date, competition per daet, and roundTypeId
+top_10 <- rankssingle |> filter(worldRank <= 10) |> 
+  select(-c(eventId, best)) |> 
+  left_join(results, by = 'personId') |>
+  inner_join(competitions, 
+             by = c("competitionId" = "id")) |> 
+  unite(Date, month, day, year, sep = '/') |> 
+  mutate(Dates = as.Date(Date, "%m/%d/%Y")) |> 
+  pivot_longer(cols = value1:value5, names_to = 'solve_number', values_to = 'time') |>
+  arrange(Dates, competitionId, roundTypeId) 
+
+# select relevent columns from large dataset
+# put all value columns into one varialbe solve_number with values to time
+# group_by person id and then count to count all the 5 solves per round per competition person did (total sovles)
+# filter time less 500 as that represents a less than 5 second solve
+# get the minimum chance value as that represents the minimum amount of solves to reach sub 5 seconds
+# take average of mean solves_until_sub_5 in order to get the average number of solves needed for each of the top 10 contenders to reach a sub 5 second solve
+top_10 |> 
+  select(Dates, personId, competitionId, roundTypeId,best, average, solve_number, time) |>
+  group_by(personId) |> 
+  mutate(solves = row_number()) |> 
+  filter(time < 500 & time > 0) |> 
+  summarize(solves_until_sub_5 = min(solves)) |> summarize(mean_solves_until_sub_5 = mean(solves_until_sub_5))
+
+```
+
+2. For one of the top 10 speedcubers make a plot of their solve times vs. the date of the solve, with date on the x-axis and solve time on the y-axis. 
+
+Answer 2: This graph represents the solve times over time for Max Park, the current top world ranked player. The graph details an inverse relationship over time, as it is shown that as Date increases, the solve time decreases. This trend confirms that increasing the years of experience solving results in an overall decrease in time. 
+
+```{r}
+# graph of top world cuber solve time vs date
+# set x axis labels to be first day of first month of each year
+# label axis and give graph title
+top_10 |> 
+  filter(worldRank == 1) |> ggplot(aes(x = Dates, y = time)) + 
+  geom_point() +
+  scale_x_date(breaks = as.Date(c('2011-01-01', 
+                                  '2012-01-01', '2013-01-01',
+                                  '2014-01-01', '2015-01-01', '2016-01-01', 
+                                  '2017-01-01', '2018-01-01', '2019-01-01', 
+                                  '2020-01-01', '2021-01-01', '2022-01-01', 
+                                  '2023-01-01', '2024-01-01')),
+                     labels = c('1/1/11', '1/1/12', '1/1/13', 
+                                '1/1/14', '1/1/15', '1/1/16', 
+                                        '1/1/17', '1/1/18', '1/1/19', 
+                                        '1/1/20', '1/1/21', '1/1/22', 
+                                        '1/1/23', '1/1/24')) + 
+  labs(x = 'Date(Month/Day/Year)') +
+  labs(y = 'Solve Time(centisecond)') +
+  labs(title = 'Solve Time vs Date for Max Park')
+
+```
+
+
+### Up-and-Coming Speed Cubers (Anya)
+
+Which speed cubers **not** in the top 10,000 (worldwide for single best time) should we keep an eye on for the near future? 
+
+The idea here is to identify "up-and-coming" speedcubers who are not yet achieving elite times. Come up with a list of **five** speedcubers (provide their names and WCA IDs) that you have identified as "up-and-coming". There is no one way to answer this question and the goal is to provide an analysis of the data that justifies the selection of your five names.
+
+Answer: An “up-and-coming” speedcuber is defined as a speedcuber with a world rank of 10,000 or more that had the most competitions in the year 2022 or after where they positioned within the top three. Mohammad Ahmad Abu Hussein (WCA ID 2018HUSS07) positioned within the top three for 14 competitions in the year 2022 or after, Sebastián Mateo España Chango (WCA ID 2018CHAN23) positioned within the top three for 12 competitions in the year 2022 or after, Rey Danilo Florez (WCA ID 2023FLOR03) positioned within the top three for 9 competitions in the year 2022 or after, José Lisandro Velásquez Martínez (WCA ID 2017MART93) positioned within the top three for 7 competitions in the year 2022 or after, and Camilo Andres Cobos Alvarado (2013ALVA04) positioned within the top three for 6 competitions in the year 2022 or after. These are the five speedcubers that have the greatest number, highest count, of competitions in the year 2022 or after where they positioned within the top three, so these speedcubers are “up-and-coming.”
+
+```{r}
+## With this code, I am creating a new object 'competitionsnew' with the 'id' variable renamed to 'competitionId,' using the left_join() function to join the 'results', 'rankssingle', and 'competitionsnew' tables, using the filter() function to only include observations where the competition year is greater than or equal to 2022, speedcuber's world rank is greater than or equal to 10000, and speedcuber's position is within the top 3, using the group_by() and summarize() functions to get the number of (i.e. count of) competitions for each speedcuber, using the unique() function to get rid of duplicates, and using the arrange() function to arrange the values in descending order.
+competitionsnew <- competitions |>
+  rename(competitionId = id)
+
+resultsranks <- results |>
+  left_join(rankssingle, by = "personId") |>
+  left_join(competitionsnew, by = "competitionId")
+
+resultsranks |>
+  filter(year >= 2022) |>
+  filter(worldRank >= 10000) |>
+  filter(pos <= 3) |>
+  group_by(personName) |>
+  summarize(count = n(), id = personId) |>
+  unique() |>
+  arrange(desc(count))
+
+
+```
+
+
+## Additional Questions
+
+
+### Question 1 (Anya)
+
+State the question here: Other than the U.S., which country has been getting the most top ranked speedcubers (i.e. within the top 10,000 world ranked speedcubers) that have a position within the top 10 for recent competitions (i.e. competitions between 2020 and 2024), so who should the U.S. look out for currently? 
+
+
+State your expectation here: We expect that the country with the greatest number of top ranked speedcubers that have a position within the top 10 for recent competitions to have the highest count out of all the other countries. For example, if we expected that China was the country that had the most top ranked speedcubers that positioned within the top 10 in recent competitions, it would have a count (i.e. number of speedcubers) greater than that of the other countries. 
+
+Answer: This question is focused on determining which country the U.S. should look out for currently with respect to speedcubing competitions. This is described as the country that has been getting the most top ranked speedcubers (i.e. within the top 10,000 world ranked speedcubers) that have a position within the top 10 for recent competitions (i.e. competitions between 2020 and 2024) other than the U.S. The expectation for this question is that the country with the greatest number of top ranked speedcubers that have a position within the top 10 for recent competitions would have the highest count out of all the other countries. For example, if the expectation is that China has the most top ranked speedcubers that positioned within the top 10 in recent competitions, it would have a count (i.e. number of speedcubers) greater than that of the other countries. Based on the output, Australia is the country that has the highest count, specifically with 4,425 top ranked speedcubers that positioned within the top 10 in recent competitions. Thus, the U.S. should look out for Australia currently with respect to speedcubing competitions.
+
+```{r}
+## With this code, I am creating a new object 'competitionsnew' with the 'id' variable renamed to 'competitionId,' using the left_join() function to join the 'results', 'rankssingle', and 'competitionsnew' tables, using the filter() function to only include observations where the competition year is greater than or equal to 2020, speedcuber's world rank is within the top 10000, and speedcuber's position is within the top 10, using the group_by() and summarize() functions to get the number of (i.e count of) observations for each country except the U.S., and using the arrange() function to arrange the values in descending order.
+competitionsnew <- competitions |>
+  rename(competitionId = id)
+
+resultsranks <- results |>
+  left_join(rankssingle, by = "personId") |>
+  left_join(competitionsnew, by = "competitionId")
+
+resultsranks |>
+  filter(year >= 2020) |>
+  filter(worldRank <= 10000) |>
+  filter(pos <= 10) |> 
+  filter(personCountryId != "USA") |>
+  group_by(personCountryId)|>
+  summarize(count = n()) |>
+  arrange(desc(count))
+
+```
+
+
+### Question 2 (Anya)
+
+State the question here: Which top ranked female speedcuber (i.e. within the top 10,000 world ranked speedcubers) has been getting the most positions within the top 10 for recent competitions (i.e. competitions between 2020 and 2024), so which female speedcuber should other speedcubers look out for currently?
+
+
+State your expectation here: We expect that the top ranked female speedcuber that has the most positions within the top 10 for recent competitions to have the highest count out of all the other female speedcubers, specifically those that have participated in competitions between 2020 and 2024. For example, if we expected that one of the top ranked U.S. female speedcubers (for ex. Katie Hull) had the most positions within the top 10 for recent competitions, she should have a count (i.e. number of times she positioned within the top 10 for recent competitions) greater than that of the other female speedcubers. 
+
+Answer: This question is centered on identifying the female speedcuber that other speedcubers should look out for currently. This is described as a top ranked female speedcuber (i.e. within the top 10,000 world ranked speedcubers) that has been getting the most positions within the top 10 for recent competitions (i.e. competitions between 2020 and 2024). The expectation for this question is that the top ranked female speedcuber that has the most positions within the top 10 for recent competitions would have the highest count out of all the other female speedcubers. For example, if the expectation is that the top ranked U.S. female speedcuber Katie Hull has the most positions within the top 10 for recent competitions, she would have a count (i.e. number of times she positioned within the top 10 for recent competitions) greater than that of the other female speedcubers. Based on the output, Juliette Sébastien has the highest count, specifically with 212 recent competitions where she positioned within the top 10. Thus, Juliette Sébastien is the female speedcuber that other speedcubers should look out for currently. 
+ 
+
+```{r}
+## With this code, I am creating new objects named 'competitionsnew' and 'personsnew' with the renaming of the 'id' variable, using the left_join() function to join the 'rankssingle', 'personsnew', 'results', and 'competitionsnew' tables, using the filter() function to only include observations where the competition year is greater than or equal to 2020, speedcuber's gender is female, speedcuber's world rank is within the top 10000, and speedcuber's position is within the top 10, using the group_by() and summarize() functions to get the number of (i.e count of) competitions for each female speedcuber, and using the arrange() function to arrange the values in descending order.
+competitionsnew <- competitions |>
+  rename(competitionId = id)
+
+personsnew <- persons |>
+  rename(personId = id)
+
+resultsfem <- rankssingle |>
+  left_join(personsnew, by = "personId") |>
+  left_join(results, by = "personId") |>
+  left_join(competitionsnew, by = "competitionId")
+
+resultsfem |>
+  filter(year >= 2020) |>
+  filter(gender == "f") |>
+  filter(worldRank <= 10000) |>
+  filter(pos <= 10) |>
+  group_by(name.x) |>
+  summarize(count = n()) |>
+  arrange(desc(count)) 
+
+```
+
+### Question 3 (if working in a group) (Rachel)
+
+NOTE: Delete this section if you are NOT working in a group
+
+State the question here: In the current years of 2020 to 2024, are competitions played in a home country more likely to be won by a citizen of the country versus other contestants (i.e. per 2020 to 2024, are the competitions played that year won overall by home residents versus non-resident competitors)?
+
+
+State your expectation here: It is expected that per year, less than .50 of competitions are won by home residents of the hosting country. This is expected as it indicates that the majority of competitions are not being won by citizens of the hosting country and thus that it is not more likely for residents of the hosting country to win competitions. Therefore, for each year, we expect the proportion of competitions won by citizens of the hosting country to be less than .50, and we expect this proportion to remain relatively constant each year. To test this, we will get the proportion of competitions won by hosting country citizens out of all competitions per year, and take the average proportion of all the years. From there, it is expected that the average proportion of competitions won by hosting country citizens over the five years is less than .50 to indicate that it is not more likely to win a competition if you are a citizen of the country. 
+
+Answer: This question focused on identifying the overall proportion of citizens of a country winning competitions hosted by their native country over the years of 2020 to 2024. This is approached as summing the total number of competitions won by a citizen of the hosting country over the total number of competitions per that year. From there, to determine the overall trend over the five years, the proportion of citizens winning hosting competitions over total competitions per year was averaged to get one final proportion. The expectation for this question is that the average proportion of citizens winning competitions hosted by their native country to be less than .5, indicating that being a citizen of a country does not influence the likelihood of winning the competitions. Based on the output, the average proportion of citizens winning competitions hosted in their native country over total competitions is .85. As this proportion is greater than .5, it indicates that per 2020 to 2024, being a citizen of the country hosting the competition increased the likelihood of winning the competition. 
+
+
+```{r}
+## select relevent columns and filter out winners or each competition as people who are ranked first in the final round
+# rename comeptitionId to id for joining
+consolidated <- results|> 
+  select('roundTypeId', 'competitionId','pos', 'personId', 'personCountryId') |> 
+  filter(pos == 1 & roundTypeId == 'f') |> rename(id = competitionId)
+
+# join consolidated results and competitions by id
+together <- inner_join(consolidated, competitions, 
+                       by = "id")  
+
+# filter by year, create a bollen to evaluate whether winner of competition is native to the county by seing if personCountryId(ID of winner) = countryId(ID of hosting country)
+# group by hear and summarize the percent of home resident winners by counting the total number of instances when the bollen equal is true, and seeing the proportion over the total instances, n()
+# get the mean of the percent_from_home_country over the five years to get final answer
+together |> filter(year >= 2020) |> 
+  mutate(equal = (personCountryId == countryId)) |>
+  group_by(year) |>
+  summarize(percent_from_home_country = sum(equal == TRUE) / n()) |> 
+  summarize(mean = mean(percent_from_home_country))
+
+```
+
+
+## Discussion
+
+Expectation Comparison for Q1 (Anya):
+For the first additional question, it was expected that the country the U.S. should look out for would have the greatest number, highest count, of top ranked speedcubers (i.e. within the top 10,000 world ranked speedcubers) that have a position within the top 10 for recent competitions (i.e. competitions between 2020 and 2024). It was expected that China was the country that the U.S. should look out for, meaning that it was expected to have the highest count of top ranked speedcubers that positioned within the top 10 in recent competitions. However, the results show that Australia has the highest count and is the country that the U.S. should look out for. Therefore, the results are unexpected, and the reason for this is because the expectation was just based on the number of speedcubers from each country that participated in competitions from all years. After the U.S., China has the most speedcubers participating in competitions (i.e. China has the second highest number of speedcubers in competitions). So, the expectation that the U.S. should look out for China was just based on the fact that China had the greatest number of speedcubers participating in competitions from all years compared to that of the other countries. This expectation did not take into account only recent competitions, specifically only competitions between 2020 and 2024. The expectation just assumed that China would have the highest number of speedcubers participating in recent competitions and thus would have a higher chance of being the country with the greatest number of top ranked speedcubers that positioned within the top 10 in recent competitions. To further explore this question, the number of speedcubers from each country participating in recent competitions can be determined to identify if a country other than China, specifically Australia, has the highest number of speedcubers in recent competitions after the U.S. For example, if Australia was the country with the second highest number of speedcubers participating in recent competitions, this increases Australia’s probability of being the country with the greatest number of top ranked speedcubers that positioned within the top 10 in recent competitions and the country that the U.S. should look out for. 
+
+Expectation Comparison for Q2 (Anya):
+For the second additional question, it was expected the female speedcuber that other speedcubers look out for would be a top ranked speedcuber (i.e. within the top 10,000 world ranked speedcubers) with the greatest number, highest count, of recent competitions (i.e. competitions between 2020 and 2024) where she has a position within the top 10. It was expected that Katie Hull was the female speedcuber that other speedcubers should look out for, meaning that she was expected to have the highest count of recent competitions where she positioned in the top 10. However, the results show that Juliette Sébastien has the highest count and is the female speedcuber that other speedcubers should look out for. Therefore, the results are unexpected, and the reason for this is because the expectation was based on the fact that the majority of speedcubers in competitions are from the U.S. As the majority of speedcubers in competitions are from the U.S., there is a higher chance, probability, that the female speedcuber with the greatest number of recent competitions where she positioned in the top 10 is also from the U.S. For this reason, it was expected that someone like Katie Hull, one of the top ranked female speedcubers from the U.S., to be the female speedcuber that other speedcubers should look out for. To further explore this question, the world rank of each female speedcuber could be determined, and it can be identified whether or not one of the highest ranked female speedcubers is the one with the greatest number of recent competitions where they positioned in the top 10. For example, if it was acknowledged that Juliette Sébastien is one of the highest ranked female speedcubers, this can also explain why she is the female speedcuber with the greatest number of recent competitions where she positioned in the top 10 and the female speedcuber that other speedcubers should look out for. 
+
+Expectation Comparison for Q3 (Rachel):
+For the third additional question, it was expected that the mean proportion of citizens winning competitions across the years of 2020 to 2024 was below .5. This was expected as there are 207 countries present in the dataset, and thus it is extremely atypical for the majority of winners across five years of competitions to be citizens of the country hosting the competition. Therefore, students expect a proportion of citizens winning competitions to total competitions played over the years of 2020 to 2024 to be less than .5 to indicate that a win at a competition is not more likely if the competitor is from the country hosting. However, the results were unexpected, as per each year from 2020 to 2024 the proportion of competitions won by residents of hosting countries over the total competitions was above .8. Additionally, the mean proportion of citizen won competitions over total competitions was 0.8507932, indicating that out of all competitions played between 2020 to 2024, on average 85% of the competitions were won by residents of the hosting country. Despite this seeming concerning at first, a future direction would be to explore the proportion of competitors a country has in the competition. As seen in the dataset, the persons dataset has 221,543 instances and 44,607 people with country as USA, meaning that out of all the cubers, 20.13% of cubers are from the USA. This indicates that certain countries have more enterents than others. Additionally, out of all 11,590 competitions in the competitions dataframe, 2,597 of those competitions were hosted by the USA, indicating that 22.4% of competitions relevant to our question were hosted in the USA. Therefore, to further explore whether there is a correlation between citizens winning competitions hosted by their home country, it needs to be taken into account whether more developed countries are hosting more countries and have more entrants, increasing the likelihood of citizens of the USA winning countries hosted in the USA. This can be done by graphing the rate at which citizens win home competitions in a year vs the rate at which a country hosts competitions per year as well as the rate at which citizens win home competitions in a year vs the amount of entrants a country has in competitions that year. Exploring these trends can help indicate whether having increased hosted competitions and competitors entering the competitions accounts for the atypical trend in citizens of the hosting country winning competitions. 
+
+Reflect on process (Rachel): Throughout the completion of this project, students developed key skills in interpreting large datasets, navigating joining various datasets to incorporate all relevant variables in one dataframe, and interpreting unfamiliar data. In terms of challenges, it was often a struggle to interpret how to approach problems without having the guiding questions stems and clear variable descriptions present in the previous homework assignments. Therefore, students had to build skills in interpreting what variables were present through the names() function, using outside resources to research the dataset, and determining which variables were relevant to answer the question. Especially for questions such as required question 4, it was difficult to determine how to combine existing variables to quantify the number of solves when it was not clearly established whether each round or value represented a solution. However, with further analysis, students were able to determine that a solve is a value per round per competition. In terms of key skills learned, students have strengthened their ability to join different datasets, use the unite function and pivot_longer() function to manipulate the data so that variables can be in their necessary forms, and interpret variables in different datasets in order to answer central questions. Overall, despite its challenges, students were able to gain proficiency in working with real world data dealing with challenges in interpretation and identifying proper variables needed to answer relevant questions. 
+
+Acknowledgement (Rachel): We acknowledge the lecture slides, Dr. Peng, and TA Soumyabrata Bose as helpful in assistance. 
+
+References (Rachel): 
+
+1) World Cube Association. www.worldcubeassociation.org. https://www.worldcubeassociation.org/.
+
+
+

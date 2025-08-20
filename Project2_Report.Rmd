@@ -1,0 +1,300 @@
+---
+title: "Project 2 Report"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Group Members (names and EIDs): Rachel Muralitharan (rsm3256) and Anya Chatterjee
+
+
+
+
+## Introduction
+# As the object of the lab is to investigate numeric regression relationships between the x variables and value in the dataset, students first implemented a linear regression on the data as linear regression is the simplest form of analyzing numeric relationships. Within the linear regression, students first tested a linear regression with all numeric columns excluding value as predictors. From there, students refined the analysis by implementing a linear regression with the predictors only including the x variables in the dataset where the correlation coefficient in relation to x is greater than .3, therefore only including variables with some correlation to value in the regression. Moving from linear regression, students wanted to investigate whether an aggregation method would increase accuracy compared to linear regression creating a predictor line with all points in the dataset. Therefore, students implemented the kNN method to determine whether using the x values of the nearest datapoints would prove to improve the accuracy of predicting value. Lastly, students decided to implement a decision tree model to give priority to variables which, when split accorss a decision boundary, greatly increase the accuracy of prediction, while having lower nodes of the tree display variables with decision boundaries that are less valuable to prediciton. By utilizing the decision tree, students are able to hirearchically cause more singificant predictors to influence the resulting predicted value which differs from both kNN and linear regression. 
+# As for predictors, students first utilized all numeric values in the kNN, linear regression, and decision tree. From there, students refined the linear regression by exluding weakly correlated variables from the model based on whether the correlation coefficient of the variable in relation to value was less than .3
+# Students utilized a correlation matrix, displaying the correlation coefficient between each numeric variable in the dataset versus the explanatory variable value. From there, students were able to refine models by excluding weekly correlated variables from their regression analysis.
+# It is expected that teh RSME value is the lowest and closest to 0 for the best fitting model as this indicates that the distance between the prediction of the model and the actual values are minimized. 
+
+# read and store dataframe
+library(tidyverse)
+dat <- read_csv("pm25_data.csv.gz")
+
+# put all numeric x columns that are not value into a dataframe
+x <- dat |> select(-value) |> select(where(is.numeric))
+# put value in a seperate dataframe
+y <- dat |> select(value)
+
+# run a correlation matrix on the x values against the y vector
+correlation <- cor(x, y)
+# visually looking at the correlation matrix, it can be seen that the only variables with a correlation about |.3| are CMAQ, imp_a5000, log_prisec_length_10000, log_prisec_length_15000, log_prisec_length_25000, log_nei_2008_pm25_sum_10000, log_nei_2008_pm25_sum_15000, log_nei_2008_pm25_sum_25000, log_nei_2008_pm10_sum_10000, log_nei_2008_pm25_sum_15000, log_nei_2008_pm10_sum_25000, aod
+# these are the variables chosen to be used for two of the models to explore if the accuracy of the model increases when including only the moderatly correlated variables to value and excluding the poorly correlated variables. 
+
+
+## Data Wrangling
+
+library(tidyverse)
+library(kknn)
+library(plotROC)
+library(tidymodels)
+dat <- read_csv("pm25_data.csv.gz")
+
+dat_split <- initial_time_split(dat, prop = 0.7)
+train <- training(dat_split)
+test <- testing(dat_split)
+
+rec <- train |>
+  recipe(value ~ CMAQ + imp_a5000 + log_prisec_length_10000 + log_prisec_length_15000 +
+  log_prisec_length_25000 + log_nei_2008_pm25_sum_10000 + log_nei_2008_pm25_sum_15000 +
+  log_nei_2008_pm25_sum_25000 + log_nei_2008_pm10_sum_10000 + log_nei_2008_pm25_sum_15000 +
+  log_nei_2008_pm10_sum_25000 + aod) |>
+  step_naomit(everything()) 
+  
+lm_model2 <- linear_reg() |>
+  set_engine("lm") |>
+  set_mode("regression")
+
+wf <- workflow() |>
+  add_recipe(rec) |>
+  add_model(lm_model2)
+
+folds <- vfold_cv(train, v = 10)
+
+res <- fit_resamples(wf, resamples = folds)
+
+# rsme 2.18
+res |>
+  collect_metrics() 
+
+
+
+# kNN
+train2 <- train |>
+  select(-county, -city, -state)
+
+rec <- train2 |>
+  recipe(value ~ .) |>
+  step_naomit(everything()) 
+
+knn_model <- nearest_neighbor(neighbors = tune("k")) |>
+  set_engine("kknn") |>
+  set_mode("regression")
+
+wf <- workflow() |>
+  add_recipe(rec) |>
+  add_model(knn_model)
+
+folds <- vfold_cv(train2, v = 10)
+
+res <- fit_resamples(wf, resamples = folds)
+
+# 1.87
+res |> 
+  collect_metrics()
+
+res <- tune_grid(wf, resamples = folds,
+                 grid = tibble(k = c(5, 7, 9, 11, 13, 15, 17)))
+
+res |> 
+    collect_metrics() |> 
+    filter(.metric == "rmse") |> 
+    ggplot(aes(k, mean)) +
+    geom_point() + 
+    geom_line()
+
+# shows that the best k is 11
+res |> 
+    show_best(metric = "rmse")
+    
+res |> 
+    show_best(metric = "rsq")
+
+res |> 
+    collect_metrics() |> 
+    filter(.metric == "rsq") |> 
+    ggplot(aes(k, mean)) +
+    geom_point() + 
+    geom_line()
+
+# rmse 2.21
+res |> 
+  collect_metrics()
+
+
+
+
+## Results
+
+# question 1
+train2 <- train |>
+  select(-county, -city, -state)
+
+rec <- train2 |>
+  recipe(value ~ .) |>
+  step_naomit(everything()) 
+
+knn_model <- nearest_neighbor((neighbors = tune("k")) |>
+  set_engine("kknn") |>
+  set_mode("regression")
+
+wf <- workflow() |>
+  add_recipe(rec) |>
+  add_model(knn_model)
+
+folds <- vfold_cv(train2, v = 10)
+
+res <- fit_resamples(wf, resamples = folds)
+
+res |> 
+  collect_metrics()
+
+knnmodel <- fit(wf, data = train)
+
+predictions <- knnmodel |>
+  predict(test)
+
+residuals <- test |>
+  mutate(residual = abs(value - predictions)) |>
+  group_by(state, city, county) |>
+  summarize(n = residual) |>
+  arrange(desc(n))
+
+
+# question 2
+# create residuals2 with test data and add predictions form kNN
+residuals2 <- test
+residuals2['predictions'] <- predictions
+
+# mutate to add residual variable
+# arrange by residuals and filter ares of large residuals
+test_full <- 
+
+rs <- residuals2 |>
+  mutate(residual = abs(value - predictions)) |>
+  arrange(desc(residual)) 
+rs$residual
+
+# run correlation matrix to determine which values are highly correlated with the high residual results  
+x1 <- test_full |> select(-c(value, residual, predictions)) |>
+  select(where(is.numeric))
+y1 <- test_full |> select(value)
+
+# view the correlation coefficient matrix between value and the x variables
+corr1 <- cor(x1, y1)
+
+
+# arrange by residuals and filter ares of small residuals
+test_full2 <- residuals2 |>
+  mutate(residual = abs(value - predictions)) |> 
+  arrange(desc(residual)) |> filter(residual < .25)
+
+# run correlation matrix to determine which values are highly correlated with the high residual results  
+x2 <- test_full2 |> select(-c(value, residual, predictions)) |>
+  select(where(is.numeric))
+y2 <- test_full2 |> select(value)
+
+# view the correlation coefficient matrix between value and the x variables
+corr2 <- cor(x2, y2) 
+
+
+# For the locations were the residual between the value and predicted are greater than 5, have a large residual indicating low accuracy in prediction, it was seen that the highest correlated variables were zcta_pop with a correlation coefficient of .755, log_nei_2008_pm10_sum_10000 with a correlation coefficient of .723, and 
+# However, for locations were the residuals betweeen the value and predicted are small, less than .25, the highest correlated variables were log_nei_2008_pm10_sum_15000, with a correlation coefficient of .87 and log_nei_2008_pm10_sum_25000 with a correlation coefficient of .86. In comparrision to the poor predicted instances with the high residuals, the correlation coefficient for zcta_pop was -0.44384258 while the correlation coefficient for log_nei_2008_pm10_sum_10000 0.82524550. In terms of the locations with large residuals, the correlation coefficient for log_nei_2008_pm10_sum_15000 was 0.614211959 and the correlation coefficient for log_nei_2008_pm10_sum_25000 was 0.572711353. 
+# Therefore, through this it can be determined that a high correlation with zcta_pop indicates the occurance of large residuals. As log_nei_2008_pm10_sum_10000 was highly correlated between both the large residual and small residual set, no conclusions can be made about this variable. However, in the small residual set, log_nei_2008_pm10_sum_15000 and log_nei_2008_pm10_sum_25000 had correlation coefficients that are at least .2 higher than the correlation coefficients for those variables in the large residual set, indicating that a high correlation for log_nei_2008_pm10_sum_15000 and log_nei_2008_pm10_sum_25000 indicates a more successful prediction. 
+
+# is is seen that large residual locations have a higher population mean
+mean(x$county_pop)
+
+# compare to the mean of low residual locaitons which is smaller
+mean(x2$county_pop)
+
+# A useful variable could be zcta_population_density. This could be significant as it is seen that areas that are poorly predicted have the highest correlation with zcta population, and an overall higher population. Therefore, it can be concluded that the model is missinterpreting the significance of population in some way. Therefore, the model should investigate population density as some zip codes will encompase a larger area, and thus even if there are more people, the people will be distributed the same as a smaller zip code, indicating similar amounts of pollution instaed of larger amounts. 
+
+# question 3
+# correlation matrix from indtroductory analysis
+correlation
+
+# redo previous linear model but remove AOD and CMAQ to see the effect on RMSE
+rec <- train |>
+  recipe(value ~ imp_a5000 + log_prisec_length_10000 + log_prisec_length_15000 +
+  log_prisec_length_25000 + log_nei_2008_pm25_sum_10000 + log_nei_2008_pm25_sum_15000 +
+  log_nei_2008_pm25_sum_25000 + log_nei_2008_pm10_sum_10000 + log_nei_2008_pm25_sum_15000 +
+  log_nei_2008_pm10_sum_25000) |>
+  step_naomit(everything()) 
+  
+lm_model3 <- linear_reg() |>
+  set_engine("lm") |>
+  set_mode("regression")
+
+wf <- workflow() |>
+  add_recipe(rec) |>
+  add_model(lm_model3)
+
+folds <- vfold_cv(train, v = 10)
+
+res <- fit_resamples(wf, resamples = folds)
+
+# RMSE is 2.42 which is greater than when AOD and CMAQ were included
+res |> 
+  collect_metrics()
+  
+# When testing our linear model 2 from earlier through removing AOD and CMAQ, it was seen that removing these variables increased the RMSE from 2.18 to 2.28. This .1 increase in RMSE indicates that the model provides a worse fit to the datapoints and creates increased distance from the prediction and estimate when these two variables are included. This can be explained as in our initial correlation matrix, it was seen that CMAQ was the highest correlated variable with value from the initial, non-split, dataset. CMAQ has a .46615 correlation coefficient with value. Additionaly, aod had one of the highest correlation coefficients with value, being .34981924. Therefore, by removing two highly correlated variables from the model, it is expected that accuracy will decrease as seen by the increase in RMSE. 
+
+
+# question 4
+  
+# graph the lower residual locations as value vs population
+test_full |> ggplot(aes(x = county_pop, y = value)) + geom_point() +
+  geom_smooth(method = 'lm') + labs(title = 'Value vs Zip code population of Large Residual Data')
+  
+# Through the graphical analysis and correlational analysis, it is seen that states with very high or low population are normally subject to large residuals and poor prediction. As Alaska and Hawaii are both in the 10 smallest population states in the US, it is predicted that the value prediction for these states will have a large residual. As the population of the most populus Alaskan zip code is 43,000 people and the most populus Hawaiin zip code is is 82,000 people, both of these values fall in range with the very low population zip codes that were poorly predicted as seen in the linear model graph. Therefore, according to kNN, as the Alaskan and Hawaiin datapoints will be surrounded by large residual predictions, it is expected that Alaska and Hawaii zip codes will also be predicted poorly. 
+
+# graph the high residual locations as value vs log_nei_2008_pm10_sum_10000
+test_full |> ggplot(aes(x = popdens_zcta, y = value)) +         geom_point() + geom_smooth(method = 'lm') + labs(title = 'Value vs Log Pollution within 1000 meters of Large Residual Data')
+
+# Additionaly, it is seen that poorly predicted locations have a high correlation with log_nei_2008_pm10_sum_10000, which represents the tons of emmision from major sources within a radius of 1000 meters. As Hawaii is more eco friendly, and Alaska has a more dispersed population, it is likely that reocrding emmisions from a major source with a radius of 1000 meters will give a low value. Looking at the linear plot of log_nei_2008_pm10_sum_10000 vs value, it is seen that locaitons with with very low log_nei_2008_pm10_sum_10000 are normally misclassified, adding to the assumption that boht Alaska and Hawaii would be poorly predicted using our best performing model of kNN. Lastly, as kNN uses the classificaiton of nearby points of similar characteristics, if locations with low population and low log_nei_2008_pm10_sum_10000 values are being missclassified, through the kNN algorithm it is likely that if hte Hawaii and Alaska points neighbor these low valued points, they will also be poorly predicted. 
+
+
+rec <- train |>
+  recipe(value ~ .) |>
+  step_naomit(everything()) 
+
+decision_model <- decision_tree() |>
+  set_engine("rpart") |>
+  set_mode("regression")
+
+wf <- workflow() |>
+  add_recipe(rec) |>
+  add_model(decision_model)
+
+folds <- vfold_cv(train, v = 10)
+
+res <- fit_resamples(wf, resamples = folds)
+
+res |> 
+  collect_metrics()
+  
+rec <- train |>
+  recipe(value ~ .) |>
+  step_naomit(everything()) 
+  
+lm_model1 <- linear_reg() |>
+  set_engine("lm") |>
+  set_mode("regression")
+
+wf <- workflow() |>
+  add_recipe(rec) |>
+  add_model(lm_model1)
+
+folds <- vfold_cv(train, v = 10)
+
+res <- fit_resamples(wf, resamples = folds)
+
+res |>
+  collect_metrics() 
+
+
+
+
+## Discussion

@@ -1,0 +1,1110 @@
+---
+title: "COVID-19 Research"
+output: html_document
+date: "2024-10-31"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Create mobility network for wave 1
+
+```{r}
+library(plyr)
+library(dplyr)
+library(igraph)
+library(tidyverse)
+library(qgraph)
+
+load('EdgeListsCounty.RData')
+edgeListComplete <- ldply(EdgeListsCounty, rbind) %>% set_names('Week', 'Dest', 'Origin', 'Visits')
+
+networkCreationDW <- function(x){
+  el1 <- as.data.frame(x)
+  names(el1) <- c("i","j","w")
+  el1 <- subset(el1, i != j)
+  ell3 <- as.matrix(el1)
+  ell3[,1] <- as.character(ell3[,1])
+  ell3[,2] <- as.character(ell3[,2])
+  g <- graph.edgelist(ell3[,1:2], directed = TRUE)
+  E(g)$weight <- as.numeric(ell3[,3])
+  g <- simplify(g)
+  return(g)
+}
+
+graphWave <- edgeListComplete %>%
+  as_tibble() %>%
+  select(Origin, Dest, Visits) %>%
+  group_by(Origin, Dest) %>%
+  summarise(across(everything(), sum)) %>%
+  filter(Origin != Dest) %>%
+  networkCreationDW()
+
+e <- get.edgelist(graphWave, names=FALSE)  # Use graphWave, not graphWave1
+l <- qgraph.layout.fruchtermanreingold(e, vcount = vcount(graphWave))
+
+plot(graphWave, layout = l, vertex.size = 7, vertex.label = NA, main = "Scale-free network")
+
+nodeStatsDW <- function(x){
+  eig <- eigen_centrality(x, directed = TRUE, weights = E(x)$weight)$vector
+  inDegree <- degree(x, mode = "in")
+  outDegree <- degree(x, mode = "out")
+  inStrength <- strength(x, mode = "in", weights = E(x)$weight)
+  outStrength <- strength(x, mode = "out", weights = E(x)$weight)
+  betweenness <- betweenness(x, directed = TRUE, weights = E(x)$weight)  # removed nobigint
+  inCoreness <- coreness(x, mode = "in")
+  outCoreness <- coreness(x, mode = "out")
+
+  centrality <- data.frame(Node = as.numeric(names(inDegree)),
+                           OutDegree = outDegree,
+                           InDegree = inDegree,
+                           OutStrength = outStrength,
+                           InStrength = inStrength,
+                           OutCoreness = outCoreness,
+                           InCoreness = inCoreness,
+                           Betweenness = betweenness,
+                           EigenCent = eig)
+  return(centrality)
+}
+
+statsWave <- nodeStatsDW(graphWave)
+
+```
+
+```{r}
+print(edgeListFirstWave)
+```
+
+### Create Full Relative Cases Dataframe
+```{r}
+library(readxl)
+library(ggplot2)
+library(tidyverse)
+
+# set up needed dataframe
+CasesTexas <- read_excel("Texas Confirmed Cases Time Series.xlsx")
+fips <- read_excel("Fips Codes.xlsx")
+population <- read_excel("County_Population.xlsx")
+countyCases <- CasesTexas %>% pivot_longer(cols = -Date, names_to = "County", values_to = "Cases") %>% arrange(County,Date)
+fipsCases <- merge(countyCases, fips, by = "County")
+fips_population <- merge(population, fips, by = "County") %>% select(Fips, Population)
+relCases_full <- merge(fipsCases, fips_population, by = "Fips") %>%
+  mutate(relCases = Cases / Population)
+```
+
+## Outlier Correction
+```{r}
+library(ggplot2)
+library(dplyr)
+library(zoo)       
+library(pracma)   
+
+iqr_bounds <- relCases_full %>%
+  group_by(County) %>%
+  summarise(
+    Q1 = quantile(relCases, 0.25, na.rm = TRUE),
+    Q3 = quantile(relCases, 0.75, na.rm = TRUE),
+    IQR = Q3 - Q1,
+    upper_bound = Q3 + 1.5 * IQR,
+    lower_bound = Q1 - 1.5 * IQR)
+
+relCases_with_bounds <- relCases_full %>%
+  left_join(iqr_bounds, by = "County")
+
+relCases_flagged <- relCases_with_bounds %>%
+  mutate(
+    relCases_outlier = ifelse(relCases > upper_bound | relCases < lower_bound, NA, relCases)
+  )
+
+# correct outliers based on an average of the previous and next datapoint
+relCases_corrected <- relCases_flagged %>%
+  arrange(County, Date) %>%
+  group_by(County) %>%
+  mutate(
+    relCases_ffill = na.locf(relCases_outlier, na.rm = FALSE),            # forward fill
+    relCases_bfill = na.locf(relCases_outlier, fromLast = TRUE, na.rm = FALSE),  # backward fill
+    relCases_corrected = ifelse(
+      is.na(relCases_outlier),
+      (relCases_ffill + relCases_bfill) / 2,
+      relCases_outlier
+    )
+  ) %>%
+  ungroup()
+
+# check that every date is present even with the moving average
+# group by county and then count the number of days
+# smooth data to reduce noise
+relCases_smoothed <- relCases_full %>%
+  arrange(County, Date) %>%
+  group_by(County) %>%
+  mutate(
+    smooth_relCases = rollmean(relCases, k = 14, fill = NA, align = "center")
+  ) %>%
+  ungroup()
+
+# visualize all the corrections done based on one county
+relCases_smoothed %>%
+  filter(County == "Montgomery") %>%
+  filter(Date > as.Date("2022-01-01")) %>%
+  ggplot(aes(x = Date)) +
+  geom_line(aes(y = relCases), color = "red", alpha = 0.5, size = 0.8, linetype = "dotted") +
+  # geom_line(aes(y = relCases_corrected), color = "blue", size = 0.8) +
+  geom_line(aes(y = smooth_relCases), color = "darkgreen", size = 1) +
+  labs(
+    title = "Original vs Corrected vs Smoothed Relative Cases (Smith County)",
+    y = "Relative Cases",
+    x = "Date",
+    color = "Legend"
+  ) +
+  scale_color_manual(values = c("Original" = "red", "Smoothed" = "darkgreen")) +
+  theme_minimal() +
+  theme(legend.position = "bottom") +
+  # Add a manual legend
+  guides(color = guide_legend(override.aes = list(
+    linetype = c("dotted", "solid", "solid"),
+    size = c(0.8, 0.8, 1)
+  ))) +
+  # Because color aes is not mapped here, manually add legend with geom_blank
+  geom_blank(aes(y = relCases, color = "Original")) +
+ # geom_blank(aes(y = relCases_corrected, color = "Corrected")) +
+  geom_blank(aes(y = smooth_relCases, color = "Smoothed"))
+
+relCases_smoothed %>%
+  filter(County == "Van Zandt", Date > as.Date("2022-01-01")) %>%
+  ggplot(aes(x = Date)) +
+  geom_line(aes(y = relCases), color = "red", alpha = 0.5, size = 0.8, linetype = "dotted") +
+  geom_line(aes(y = smooth_relCases), color = "darkgreen", size = 1) +
+  labs(
+    title = "Original vs Smoothed Relative Cases (Sabine County)",
+    y = "Relative Cases",
+    x = "Date",
+    color = "Legend"
+  ) +
+  scale_color_manual(values = c("Original" = "red", "Smoothed" = "darkgreen")) +
+  theme_minimal() +
+  theme(legend.position = "bottom") +
+  guides(color = guide_legend(override.aes = list(
+    linetype = c("dotted", "solid"),
+    size = c(0.8, 1)
+  ))) +
+  geom_blank(aes(y = relCases, color = "Original")) +
+  geom_blank(aes(y = smooth_relCases, color = "Smoothed"))
+
+```
+### East Texas 
+```{r}
+east_texas_counties <- c(
+  "Lamar", "Red River", "Bowie", "Delta", "Hopkins", "Franklin", "Titus",
+  "Morris", "Cass", "Camp", "Rains", "Wood", "Upshur", "Marion", "Harrison",
+  "Gregg", "Smith", "Van Zandt", "Rusk", "Panola", "Henderson", "Anderson",
+  "Cherokee"
+)
+
+other_texas_counties <- c(
+  "Travis", "Harris", "Dallas", "Tarrant", "Bexar", "El Paso", "Collin", "Denton",
+  "Williamson", "Hays", "Cameron", "Nueces", "Lubbock", "McLennan", "Midland",
+  "Ector", "Potter", "Randall", "Taylor", "Tom Green", "Bell", "Johnson", "Grayson"
+)
+
+
+relCases_tagged <- relCases_smoothed %>%
+  mutate(Group = case_when(
+    County %in% east_texas_counties ~ "East Texas",
+    County %in% other_texas_counties ~ "Other Texas",
+    TRUE ~ NA_character_  # Exclude other counties from analysis
+  )) %>%
+  filter(!is.na(Group))  # Remove counties not in either group
+
+relCases_grouped <- relCases_tagged %>%
+  group_by(Date, Group) %>%
+  summarise(TotalRelCases = sum(smooth_relCases, na.rm = TRUE), .groups = "drop")
+
+library(ggplot2)
+relCases_grouped$Date <- as.Date(relCases_grouped$Date)
+
+ggplot(relCases_grouped, aes(x = Date, y = TotalRelCases, color = Group)) +
+  geom_line(size = 1) +
+  labs(
+    title = "Relative COVID Cases Over Time",
+    subtitle = "East Texas vs Other Texas Counties",
+    x = "Date", y = "Smoothed Relative Cases"
+  ) +
+  scale_color_manual(values = c("East Texas" = "darkgreen", "Other Texas" = "gray40")) + 
+  scale_x_date(date_breaks = "1 month", date_labels = "%b %Y") +
+  theme_minimal() +  # Use it once
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+# Filter just East Texas counties
+east_texas_only <- relCases_grouped %>%
+  filter(Group == "East Texas")
+
+# Filter just East Texas counties
+other_texas_only <- relCases_grouped %>%
+  filter(Group == "Other Texas")
+
+# Create the plot
+ggplot(east_texas_only, aes(x = Date, y = TotalRelCases, color = Group)) +
+  geom_line(size = 1) +
+  labs(title = "Relative COVID Cases Over Time",
+       subtitle = "East Texas Counties Only",
+       x = "Date", y = "Smoothed Relative Cases") +
+  theme_minimal() +
+  scale_color_manual(values = c("East Texas" = "darkgreen"))
+
+# Create the plot
+ggplot(other_texas_only, aes(x = Date, y = TotalRelCases, color = Group)) +
+  geom_line(size = 1) +
+  labs(title = "Relative COVID Cases Over Time",
+       subtitle = "Other Texas Counties Only",
+       x = "Date", y = "Smoothed Relative Cases") +
+  theme_minimal() +
+  scale_color_manual(values = c("Other Texas" = "darkgreen"))
+
+```
+
+### Time Series Analysis for wave seperation 
+```{r}
+# Summing relCases by date across all counties
+total_cases_by_date <- relCases_full %>%
+  group_by(Date) %>%
+  summarise(total_relCases = sum(relCases, na.rm = TRUE)) %>%
+ # mutate(
+ #   smooth_relCases = rollmean(total_relCases, k = 14, fill = NA, align = "center")
+ # ) %>%
+  arrange(Date)
+
+# find which counties are creating maximum point
+# do outlier correction for one date range
+
+# view time series
+ggplot(total_cases_by_date, aes(x = Date, y = total_relCases)) +
+  geom_line(color = "steelblue") +
+  labs(title = "Total Relative Cases Over Time (All Counties)",
+       x = "Date", y = "Total Relative Cases") +
+  theme_minimal()
+
+# smooth time series
+time_series <- relCases_smoothed %>%
+  group_by(Date) %>%
+  summarise(total_relCases = sum(smooth_relCases, na.rm = TRUE)) %>%
+  arrange(Date)
+
+ggplot(time_series, aes(x = Date, y = total_relCases)) +
+  geom_line(color = "steelblue") +
+  labs(title = "Smooth Relative Cases Over Time (All Counties)",
+       x = "Date", y = "Smooth Relative Cases") +
+  theme_minimal()
+
+```
+### Create Waves
+```{r}
+# invert the cases to turn minima into maxima then use findpeaks to find the maximas
+# set the distance appart peaks should be
+peaks <- findpeaks(-time_series$total_relCases, 
+                   minpeakdistance = 120)  # spacing at least 100 days between minima (adjust as needed)
+
+# Extract the indices of minima, basically start and end of peak
+minima_idx <- peaks[, 2]
+
+# Convert the minima indexes into dates
+minima_dates <- time_series$Date[minima_idx]
+
+# create boundaries for each wave including the start and end dates
+wave_breaks <- c(min(time_series$Date), minima_dates, max(time_series$Date))
+
+# using the boundaries created, create a new column with the wave label
+time_series_waves <- time_series %>%
+  mutate(
+    wave = cut(Date, 
+               breaks = wave_breaks,
+               include.lowest = TRUE,
+               labels = paste0("Wave_", seq(length(wave_breaks) - 1)))
+  )
+
+# plot the time series with color as wave 
+ggplot(time_series_waves, aes(x = Date, y = total_relCases, color = wave)) +
+  geom_line(size = 1) +
+  labs(title = "COVID-19 Waves Based on Relative Cases",
+       y = "Total Relative Cases") +
+  theme_minimal()
+```
+### Create Waves Second Method
+```{r}
+# first min
+start_date <- time_series[1, ]
+
+# 2nd min
+filtered_data <- time_series %>%
+  filter(Date >= '2020-05-01' & Date <= '2020-07-01')
+min2 <- filtered_data %>%
+  filter(total_relCases == min(total_relCases, na.rm = TRUE))
+
+# 3rd min
+filtered_data <- time_series %>%
+  filter(Date >= '2020-08-01' & Date <= '2020-10-01')
+min3 <- filtered_data %>%
+  filter(total_relCases == min(total_relCases, na.rm = TRUE))
+
+# 4th min
+filtered_data <- time_series %>%
+  filter(Date >= '2020-12-01' & Date <= '2021-02-01')
+min4 <- filtered_data %>%
+  filter(total_relCases == min(total_relCases, na.rm = TRUE))
+
+# 5th min
+filtered_data <- time_series %>%
+  filter(Date >= '2021-03-01' & Date <= '2021-08-01')
+min5 <- filtered_data %>%
+  filter(total_relCases == min(total_relCases, na.rm = TRUE))
+
+# 6th min
+filtered_data <- time_series %>%
+  filter(Date >= '2021-08-01' & Date <= '2021-09-01')
+min6 <- filtered_data %>%
+  filter(total_relCases == min(total_relCases, na.rm = TRUE))
+
+# 7th min
+filtered_data <- time_series %>%
+  filter(Date >= '2021-10-01' & Date <= '2021-12-01')
+min7 <- filtered_data %>%
+  filter(total_relCases == min(total_relCases, na.rm = TRUE))
+
+# 8th min
+filtered_data <- time_series %>%
+  filter(Date >= '2022-03-01' & Date <= '2022-05-01')
+min8 <- filtered_data %>%
+  filter(total_relCases == min(total_relCases, na.rm = TRUE))
+
+# 9th min
+filtered_data <- time_series %>%
+  filter(Date >= '2022-10-01' & Date <= '2022-12-01')
+min9 <- filtered_data %>%
+  filter(total_relCases == min(total_relCases, na.rm = TRUE))
+
+# 10th min
+filtered_data <- time_series %>%
+  filter(Date >= '2023-02-01' & Date <= '2023-03-01')
+min10 <- filtered_data %>%
+  filter(total_relCases == min(total_relCases, na.rm = TRUE))
+
+# last min
+end_date <- time_series[nrow(time_series), ]
+
+# Combine mins points into one dataframe for plotting
+min_points <- bind_rows(start_date, min2, min3, min4, min5, 
+                        min6, min7, min8, min9, min10, end_date)
+
+wave_breaks <- min_points$Date
+
+time_series_waves <- time_series %>%
+  mutate(wave = cut(Date,
+                    breaks = wave_breaks,
+                    include.lowest = TRUE,
+                    right = FALSE,
+                    labels = paste0("Wave_", seq(length(wave_breaks) - 1))
+                    )
+        )
+
+# Plot with red dots for mins
+ggplot(time_series, aes(x = Date, y = total_relCases)) +
+  geom_line(size = 1) +
+  geom_point(data = min_points, aes(x = Date, y = total_relCases), color = "red", size = 3) +
+  scale_x_date(date_breaks = "1 month", date_labels = "%b %Y") +
+  labs(title = "Total Relative Cases Over Time with Max Points Highlighted",
+       y = "Total Relative Cases", x = "Date") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# 4. Plot colored by wave
+ggplot(time_series_waves, aes(x = Date, y = total_relCases, color = wave)) +
+  geom_line(size = 1) +
+  scale_x_date(date_breaks = "1 month", date_labels = "%b %Y") +
+  labs(title = "Total Relative Cases Over Time by Wave",
+       y = "Total Relative Cases", x = "Date", color = "Wave") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# get a county, make rolling average, calculate peak, start of wave, end of wave
+# do the same for all counties
+# each county has a different start and end date
+# make a figure of the time series of each county, overlay together and ensure only working on the first wave
+```
+### Create Master Dataframe
+```{r}
+# need to merge wave classification, smoothed cases, and mobility metrics 
+waves <- time_series_waves %>% select(Date, wave)
+
+cases <- relCases_smoothed %>% select(Fips, County, Date, Population, smooth_relCases)
+
+cases_with_waves <- cases %>%
+  full_join(waves, by = "Date")
+
+master_df <- cases_with_waves %>%
+  full_join(statsWave, by = c("Fips" = "Node"))
+
+ranked_counties <- master_df %>%
+  group_by(Fips, County) %>%
+  summarise(
+    avg_instrength = mean(InStrength, na.rm = TRUE),
+    total_cases = sum(smooth_relCases, na.rm = TRUE),
+    dominant_wave = wave[which.max(table(wave))],
+    .groups = 'drop'
+  ) %>%
+  arrange(desc(avg_instrength))
+
+master_df
+```
+### Calculating Early Warning Sign for master df
+```{r}
+library(dplyr)
+library(ggplot2)
+
+# Define the threshold multiplier
+threshold_multiplier <- 0.10
+
+# threshold per wave
+thresholds_per_wave <- master_df %>%
+  group_by(wave) %>%
+  summarize(threshold = mean(smooth_relCases, na.rm = TRUE) * threshold_multiplier)
+
+# create a baseline date for each wave
+wave_dates <- data.frame(baseline_date = as.Date(wave_breaks))  %>%
+  mutate(wave = paste0("Wave_", row_number()))
+
+# Find earliest warning per Fips per wave
+early_warning <- master_df %>%
+  full_join(thresholds_per_wave, by = "wave") %>%                # Join threshold per wave 
+  full_join(wave_dates %>% select(wave, baseline_date), by = "wave") %>%  # Join baseline_date per wave
+  mutate(threshold_used = if_else(is.na(threshold), overall_threshold, threshold)) %>%
+  mutate(warning = (smooth_relCases > threshold_used)) %>%
+  filter(warning == TRUE) %>%
+  group_by(wave, Fips, baseline_date) %>%                         # Keep baseline_date grouped
+  summarize(earlywarning = min(Date), .groups = "drop") %>%
+  mutate(daysUntilWarning = as.numeric(as.Date(earlywarning) - baseline_date))
+
+
+# Join with statsWave data
+early_warning_metrics <- early_warning %>%
+  left_join(statsWave, by = c("Fips" = "Node")) %>%
+  filter(daysUntilWarning > 14)
+
+# Ensure wave is a properly ordered factor
+early_warning_metrics <- early_warning_metrics %>%
+  mutate(wave = factor(wave, levels = paste0("Wave_", 1:8)))  # adjust range as needed
+
+# Plot with ordered facets
+ggplot(early_warning_metrics, aes(x = log(OutStrength), y = daysUntilWarning)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  facet_wrap(~ wave) +
+  labs(title = "Early Warning vs OutStrength by Wave",
+       x = "Log OutStrength",
+       y = "Days Until Warning") +
+  theme_minimal()
+
+```
+
+### Calculating Early Warning Sign
+```{r}
+# get early warning sign
+# redo graph with larger threshold and smaller threshold
+threshold <- mean(outlierK1$rel_average_14, na.rm = TRUE) * .10
+early_warning <- outlierK1  %>% mutate(warning = (rel_average_14 > threshold)) %>%
+  filter(warning == TRUE) %>% group_by(Fips) %>% summarize(earlywarning = min(Date))
+
+early_warning['daysUntilWarning'] <- as.numeric(as.Date(early_warning$earlywarning) - as.Date('2020-03-06'))
+early_warning_metrics <- merge(early_warning, statsWave1, by.x = "Fips", by.y = "Node") %>%
+  filter(daysUntilWarning > 14 & OutStrength > 0)
+
+removed1_ew <- early_warning_metrics %>% filter(daysUntilWarning <= 14)
+
+early_warning_metrics %>%
+  ggplot(aes(x = log(OutStrength), y = daysUntilWarning)) + 
+  geom_point() + 
+  geom_smooth(method = 'lm')
+
+
+glm_wave1 <- lm(log(OutStrength) ~ daysUntilWarning, data=early_warning_metrics)
+hist(glm_wave1$residuals, main='Wave 1 Residuals', xlab='Residual', col='light grey', right=F)
+plot(glm_wave1$fitted.values, glm_wave1$residuals, xlab= 'Fitted Values', ylab='Residuals', 
+     main='Residual Plot', pch=20) + abline(h=0, col='red') 
+summary(glm_wave1)
+
+```
+
+### peak height and date difference
+```{r}
+# peak height with fips, county, and date of occurance
+maxDateWave1 <- outlierK1 %>% select('Date', 'Fips', 'rel_average_14') %>% 
+  group_by(Fips) %>%
+  slice_max(rel_average_14) %>% slice_min(Date)
+
+# find the days until where the peak occurs
+start <- as.Date('2020-03-06')
+dates <- as.Date(maxDateWave1$Date)
+diff <- dates - start
+maxDateWave1['dateDiff'] <- as.numeric(diff)
+
+# final dataframe with rel_average_14 peak height, days until peak, and wave metrics
+maxDateWave1Metrics <- merge(maxDateWave1, statsWave1, by.x = "Fips", by.y = "Node") %>%
+  transform(dateDiff = as.numeric(dateDiff)) %>% filter(dateDiff > 14) %>% filter(rel_average_14 > 0) %>% rename(peakHeight = rel_average_14)
+
+```
+
+
+### Total Relative Cases
+```{r}
+# total relative cases per county with metrics
+library(dplyr)
+relCasesSummedWave1 <- outlierK1 %>% select(Fips, rel_average_14) %>% mutate(Fips = as.factor(Fips)) %>%
+  group_by(Fips) %>% arrange(Fips) %>% drop_na() %>% summarize(total = sum(rel_average_14))
+countyCasesWave1Metrics <- merge(relCasesSummedWave1, statsWave1, by.x = "Fips", by.y = "Node") %>%
+  filter(total > 0)
+```
+
+### Total Relative Cases Linear Regression
+```{r}
+countyCasesWave1Metrics  %>%
+  ggplot(aes(x = log(InStrength), y = total)) + 
+  geom_point() + geom_smooth(method = 'lm')
+glm_wave1 <- lm(log(OutStrength) ~ total, data = countyCasesWave1Metrics)
+hist(glm_wave1$residuals, main='Wave 1 Residuals', xlab='Residual', col='light grey', right=F)
+plot(glm_wave1$fitted.values, glm_wave1$residuals, xlab= 'Fitted Values', ylab='Residuals', main='Residual Plot', pch=20) + 
+  abline(h=0, col='red') 
+summary(glm_wave1)
+```
+
+### Total Relative Cases Linear Regression
+```{r}
+countyCasesWave1Metrics  %>%
+  ggplot(aes(x = log(OutStrength), y = total)) + 
+  geom_point() + geom_smooth(method = 'lm')
+glm_wave1 <- lm(log(OutStrength) ~ total, data = countyCasesWave1Metrics)
+hist(glm_wave1$residuals, main='Wave 1 Residuals', xlab='Residual', col='light grey', right=F)
+plot(glm_wave1$fitted.values, glm_wave1$residuals, xlab= 'Fitted Values', ylab='Residuals', main='Residual Plot', pch=20) + 
+  abline(h=0, col='red') 
+summary(glm_wave1)
+```
+
+### Date Diff Cases Linear Regression
+```{r}
+maxDateWave1Metrics  %>%
+  ggplot(aes(x = log(OutStrength), y = dateDiff)) + 
+  geom_point() + geom_smooth(method = 'lm')
+glm_wave1 <- lm(log(OutStrength) ~ dateDiff, data = maxDateWave1Metrics)
+hist(glm_wave1$residuals, main='Wave 1 Residuals', xlab='Residual', col='light grey', right=F)
+plot(glm_wave1$fitted.values, glm_wave1$residuals, xlab= 'Fitted Values', ylab='Residuals', main='Residual Plot', pch=20) + 
+  abline(h=0, col='red') 
+summary(glm_wave1)
+```
+
+### Peak Height Linear Regression
+```{r}
+maxDateWave1Metrics  %>%
+  ggplot(aes(x = log(OutStrength), y = peakHeight)) + 
+  geom_point() + geom_smooth(method = 'lm')
+glm_wave1 <- lm(log(OutStrength) ~ peakHeight, data = maxDateWave1Metrics)
+hist(glm_wave1$residuals, main='Wave 1 Residuals', xlab='Residual', col='light grey', right=F)
+plot(glm_wave1$fitted.values, glm_wave1$residuals, xlab= 'Fitted Values', ylab='Residuals', main='Residual Plot', pch=20) + 
+  abline(h=0, col='red') 
+summary(glm_wave1)
+```
+### Full dataframe with all metrics
+```{r}
+diseaseBurden1 <- maxDateWave1Metrics  %>% merge(countyCasesWave1Metrics %>% select(Fips, total), by = 'Fips') %>%
+  merge(early_warning_metrics %>% select(Fips, daysUntilWarning), by = 'Fips')  %>% merge(fips, by = 'Fips')
+```
+
+
+### Create Relative Cases Dataframe for Wave 1 new part
+```{r}
+edgeListSecondWave <- edgeListComplete %>% filter(Week >= as.Date('2020-05-22'), Week <= as.Date('2020-10-05'))
+graphWave2  <- edgeListSecondWave %>% as_tibble() %>% dplyr::select(Origin,Dest,Visits) %>%
+  group_by(Origin,Dest) %>% dplyr::summarise_each(sum) %>% filter(Origin != Dest) %>% networkCreationDW()
+
+statsWave2 <- nodeStatsDW(graphWave2)
+
+# wave 2 dataframe 
+countyCasesWave2 <- fipsCases %>% filter(Date >= as.Date('2020-05-22'), Date <= as.Date('2021-10-05'))
+relCountyCasesWave2 <- merge(countyCasesWave2, fips_population, by.x = "Fips", by.y = "Fips") %>%
+  mutate(relCases = Cases / Population)
+```
+
+### Outlier Corrections
+```{r}
+# finding upper bound
+Q1 <- aggregate(relCases~County,relCountyCasesWave2 , FUN = quantile, probs = 0.25) %>% select(relCases)
+Q3 <- aggregate(relCases~County,relCountyCasesWave2 , FUN = quantile, probs = 0.75) %>% select(relCases)
+IQR <- Q3 - Q1
+upperBound <- Q3 + (1.5 * IQR)
+counties <- Fips_Codes %>% select(County)
+counties['upperBound'] <- upperBound  
+
+# merge upper bound with case dataset
+upperBound <- merge(relCountyCasesWave2 , counties, by.x = "County", by.y = "County")
+
+# if case is an outlier, label it NA
+upperBound['upper'] <- ifelse(upperBound$relCases > upperBound$upperBound, NA, upperBound$relCases)
+upperBound['lower'] <- ifelse(upperBound$relCases > upperBound$upperBound, NA, upperBound$relCases)
+
+# replace outliers with average of datapoint above and datapoint after
+outliers2_down <- upperBound %>% arrange(County, Date) %>% 
+  fill(lower, .direction = "down") %>% select(lower, Date, Fips) 
+
+outliers2_up <- upperBound %>% arrange(County, Date) %>% 
+  fill(upper, .direction = "up") %>% select(upper, Date, Fips)
+
+# getting the average of upper and lower
+outliers2_down['relCasesCorrected'] <- (outliers2_down$lower + outliers2_up$upper) / 2
+
+# get relative average 14 value
+outlierK2 <- outliers2_down %>% group_by(Fips) %>%
+  mutate(rel_average_14 = rollmean(relCasesCorrected, k = 14, fill = NA))
+```
+
+### View Final Dataframe
+```{r}
+outlierK2 %>%
+  ggplot(aes(x = Date, y = rel_average_14, color = Fips, alpha = .5)) + 
+  geom_line()
+```
+### Early Warning
+```{r}
+start <- outlierK1_split  %>% filter(Date == as.Date('2020-05-28')) %>% select(Fips, baseline = rel_average_14)
+
+norm_outlierK2 <- outlierK1_split %>% left_join(start) %>% mutate(normalize = rel_average_14 - baseline) %>% 
+  filter(normalize > 0)
+
+threshold2 <- mean(norm_outlierK2$normalize, na.rm = TRUE) * .10
+
+early_warning2 <- norm_outlierK2 %>% mutate(warning = (normalize > threshold2)) %>%
+  filter(warning == TRUE) %>% group_by(Fips) %>% summarize(earlywarning = min(Date))
+
+early_warning2['daysUntilWarning'] <- as.numeric(as.Date(early_warning2$earlywarning) - as.Date('2020-05-22'))
+early_warning2 <- early_warning2 %>% left_join(Fips_Codes, by = 'Fips')
+early_warning2_metrics <- merge(early_warning2, statsWave2, by.x = "Fips", by.y = "Node") %>%
+  filter(daysUntilWarning > 14 & OutStrength > 0)
+
+early_warning2_metrics %>%
+  ggplot(aes(x = log(OutStrength), y = daysUntilWarning)) + 
+  geom_point() + geom_smooth(method = 'lm')
+
+glm_wave2 <- lm(log(OutStrength) ~ daysUntilWarning, data=early_warning2_metrics)
+hist(glm_wave2$residuals, main='Wave 2 Residuals', xlab='Residual', col='light grey', right=F)
+plot(glm_wave2$fitted.values, glm_wave2$residuals, xlab= 'Fitted Values', ylab='Residuals', main='Residual Plot', pch=20) + 
+  abline(h=0, col='red') 
+summary(glm_wave2)
+```
+### Calculate Peak Height and Date diff for wave 1 split
+```{r}
+# peak height with fips, county, and date of occurance
+maxDateWave2 <- outlierK2 %>% select('Date', 'Fips', 'rel_average_14') %>% 
+  group_by(Fips) %>%
+  slice_max(rel_average_14) %>% slice_min(Date)
+
+# find the days until where the peak occurs
+start <- as.Date('2020-05-22')
+dates <- as.Date(maxDateWave2$Date)
+diff <- dates - start
+maxDateWave2['dateDiff'] <- as.numeric(diff)
+
+# final dataframe with rel_average_15 peak height, days until peak, and wave metrics
+maxDateWave2Metrics <- merge(maxDateWave2, statsWave2, by.x = "Fips", by.y = "Node") %>%
+  transform(dateDiff = as.numeric(dateDiff)) %>% filter(dateDiff > 14) %>%
+  filter(rel_average_14 > 0 & rel_average_14 < .006) %>% 
+  rename(peakHeight = rel_average_14)
+```
+
+### Total Relative Cases for wave 1 split
+```{r}
+# total relative cases per county with metrics
+relCasesSummedWave2 <- outlierK2 %>% select(Fips, rel_average_14) %>% mutate(Fips = as.factor(Fips)) %>%
+  group_by(Fips) %>% arrange(Fips) %>% drop_na() %>% summarize(total = sum(rel_average_14))
+countyCasesWave2Metrics <- merge(relCasesSummedWave2, statsWave2, by.x = "Fips", by.y = "Node") %>% 
+  filter(total > 0 & OutStrength > 0 & InStrength > 0)
+```
+
+### Total Relative Cases Linear Regression wave 1 split
+```{r}
+countyCasesWave2Metrics  %>%
+  ggplot(aes(x = log(InStrength), y = total)) + 
+  geom_point() + geom_smooth(method = 'lm')
+glm_wave2 <- lm(log(InStrength) ~ total, data = countyCasesWave2Metrics)
+hist(glm_wave2$residuals, main='Wave 2 Residuals', xlab='Residual', col='light grey', right=F)
+plot(glm_wave2$fitted.values, glm_wave2$residuals, xlab= 'Fitted Values', ylab='Residuals', main='Residual Plot', pch=20) + 
+  abline(h=0, col='red') 
+summary(glm_wave2)
+
+countyCasesWave2Metrics  %>% arrange(desc(total))
+```
+### Date Diff Linear Regression wave 1 split
+```{r}
+maxDateWave2Metrics  %>%
+  ggplot(aes(x = log(OutStrength), y = dateDiff)) + 
+  geom_point() + geom_smooth(method = 'lm')
+glm_wave2 <- lm(log(OutStrength) ~ dateDiff, data = maxDateWave2Metrics)
+hist(glm_wave2$residuals, main='Wave 2 Residuals', xlab='Residual', col='light grey', right=F)
+plot(glm_wave2$fitted.values, glm_wave2$residuals, xlab= 'Fitted Values', ylab='Residuals', main='Residual Plot', pch=20) + 
+  abline(h=0, col='red') 
+summary(glm_wave2)
+```
+### Peak Height Linear Regression wave 1 split
+```{r}
+maxDateWave2Metrics  %>%
+  ggplot(aes(x = log(OutStrength), y = peakHeight)) + 
+  geom_point() + geom_smooth(method = 'lm')
+glm_wave2 <- lm(log(OutStrength) ~ peakHeight, data = maxDateWave2Metrics)
+hist(glm_wave2$residuals, main='Wave 2 Residuals', xlab='Residual', col='light grey', right=F)
+plot(glm_wave2$fitted.values, glm_wave2$residuals, xlab= 'Fitted Values', ylab='Residuals', main='Residual Plot', pch=20) + 
+  abline(h=0, col='red') 
+summary(glm_wave2)
+```
+
+### Create Relative Cases Dataframe for Wave 2
+```{r}
+edgeListSecondWave <- edgeListComplete %>% filter(Week >= as.Date('2020-10-06'), Week <= as.Date('2021-06-19'))
+graphWave2  <- edgeListSecondWave %>% as_tibble() %>% select(Origin,Dest,Visits) %>% group_by(Origin,Dest) %>% summarise_each(sum) %>% filter(Origin != Dest) %>% networkCreationDW()
+
+statsWave2 <- nodeStatsDW(graphWave2)
+
+# wave 2 dataframe 
+countyCasesWave2 <- fipsCases %>% filter(Date >= as.Date('2020-10-06'), Date <= as.Date('2021-06-19'))
+relCountyCasesWave2 <- merge(countyCasesWave2, fips_population, by.x = "Fips", by.y = "Fips") %>%
+  mutate(relCases = Cases / Population)
+```
+
+### Outlier Correction
+```{r}
+# creating dataframe accounting for outliers
+# finding upper bound
+Q1_wave2 <- aggregate(relCases~Fips,relCountyCasesWave2, FUN = quantile, probs = 0.25) %>% select(relCases)
+Q3_wave2 <- aggregate(relCases~Fips,relCountyCasesWave2, FUN = quantile, probs = 0.75) %>% select(relCases)
+IQR_wave2 <- Q3_wave2 - Q1_wave2
+upperBound_wave2 <- Q3_wave2 + (1.5 * IQR_wave2)
+counties2 <- Fips_Codes %>% select(County)
+counties2['upperBound'] <- upperBound_wave2
+
+
+# merge upper bound with case dataset
+upperBoundWave2Data <- merge(relCountyCasesWave2, counties2, by.x = "County", by.y = "County")
+
+# if case is an outlier, label it NA
+upperBoundWave2Data['upper'] <- ifelse(upperBoundWave2Data$relCases > upperBoundWave2Data$upperBound, NA, upperBoundWave2Data$relCases)
+upperBoundWave2Data['lower'] <- ifelse(upperBoundWave2Data$relCases > upperBoundWave2Data$upperBound, NA, upperBoundWave2Data$relCases)
+
+# replace outliers with average of datapoint above and datapoint after
+outliers2_down <- upperBoundWave2Data %>% arrange(County, Date) %>% 
+  fill(lower, .direction = "down") %>% select(lower, Date, Fips) 
+
+outliers2_up <- upperBoundWave2Data %>% arrange(County, Date) %>% 
+  fill(upper, .direction = "up") %>% select(upper, Date, Fips)
+
+# getting the average of upper and lower
+outliers2_down['relCasesCorrected'] <- (outliers2_down$lower + outliers2_up$upper) / 2
+
+# get relative average 14 value
+outlierK2 <- outliers2_down %>% group_by(Fips) %>%
+  mutate(rel_average_14 = rollmean(relCasesCorrected, k = 14, fill = NA))
+```
+
+### View outlier corrected dataframe
+```{r}
+# create all three models and compare for wave 1
+# total cases with in strenth, total cases wtih in strength, total cases with in + out --> for negative binomial distribution
+# can't use relative Cases, use standard counts without outlier correction yet
+# enter population as an offset in the model
+# possion: mean of response varaible has to be similar to the variance of the response variable
+# to deal with over or under distribution have negative binomial distribution
+# zero inflated negative binomial model: takes into consideration that data has lots of zeros
+# glm(response ~ var1 + var2 + offset(population), data = data1)
+outlierK2 %>% filter(Fips == '48269') %>%
+  ggplot(aes(x = Date, y = rel_average_14, color = Fips, alpha = .5)) + 
+  geom_line()
+
+var(countyCasesWave2Metrics$total)
+
+countyCasesWave2Metrics %>% filter(OutStrength > 0 & total > 0) %>% ggplot(aes(x = OutStrength)) + geom_histogram() + scale_x_log10()
+
+countyCasesWave2Metrics %>% filter(InStrength > 0 & total > 0) %>% ggplot(aes(x = InStrength)) + geom_histogram() + scale_x_log10()
+
+countyCasesWave2Metrics %>% arrange(desc(InStrength))
+
+print(summary(lm(total~log(OutStrength), data = countyCasesWave2Metrics)))
+```
+
+### Early Warning
+```{r}
+start <- outlierK2  %>% filter(Date == as.Date('2020-10-11')) %>% select(Fips, baseline = rel_average_14)
+
+norm_outlierK2 <- outlierK2 %>% left_join(start) %>% mutate(normalize = rel_average_14 - baseline) %>% 
+  filter(normalize > 0)
+
+threshold2 <- mean(norm_outlierK2$normalize, na.rm = TRUE) * .10
+
+early_warning2 <- norm_outlierK2 %>% mutate(warning = (normalize > threshold2)) %>%
+  filter(warning == TRUE) %>% group_by(Fips) %>% summarize(earlywarning = min(Date))
+
+early_warning2['daysUntilWarning'] <- as.numeric(as.Date(early_warning2$earlywarning) - as.Date('2020-10-05'))
+early_warning2 <- early_warning2 %>% left_join(Fips_Codes, by = 'Fips')
+early_warning2_metrics <- merge(early_warning2, statsWave2, by.x = "Fips", by.y = "Node") %>%
+  filter(daysUntilWarning > 14 & OutStrength > 0)
+
+early_warning2_metrics %>%
+  ggplot(aes(x = log(OutStrength), y = daysUntilWarning)) + 
+  geom_point() + geom_smooth(method = 'lm')
+
+glm_wave2 <- lm(log(OutStrength) ~ daysUntilWarning, data=early_warning2_metrics)
+hist(glm_wave2$residuals, main='Wave 2 Residuals', xlab='Residual', col='light grey', right=F)
+plot(glm_wave2$fitted.values, glm_wave2$residuals, xlab= 'Fitted Values', ylab='Residuals', main='Residual Plot', pch=20) + 
+  abline(h=0, col='red') 
+summary(glm_wave2)
+```
+
+### Calculate Peak Height and Date diff
+```{r}
+# peak height with fips, county, and date of occurance
+maxDateWave2 <- outlierK2 %>% select('Date', 'Fips', 'rel_average_14') %>% 
+  group_by(Fips) %>%
+  slice_max(rel_average_14) %>% slice_min(Date)
+
+# find the days until where the peak occurs
+start <- as.Date('2020-10-05')
+dates <- as.Date(maxDateWave2$Date)
+diff <- dates - start
+maxDateWave2['dateDiff'] <- as.numeric(diff)
+
+# final dataframe with rel_average_15 peak height, days until peak, and wave metrics
+maxDateWave2Metrics <- merge(maxDateWave2, statsWave2, by.x = "Fips", by.y = "Node") %>%
+  transform(dateDiff = as.numeric(dateDiff)) %>% filter(dateDiff > 14) %>%
+  filter(rel_average_14 > 0 & rel_average_14 < .006) %>% 
+  rename(peakHeight = rel_average_14)
+```
+
+### Total Relative Cases
+```{r}
+# total relative cases per county with metrics
+relCasesSummedWave2 <- outlierK2 %>% select(Fips, rel_average_14) %>% mutate(Fips = as.factor(Fips)) %>%
+  group_by(Fips) %>% arrange(Fips) %>% drop_na() %>% summarize(total = sum(rel_average_14))
+countyCasesWave2Metrics <- merge(relCasesSummedWave2, statsWave2, by.x = "Fips", by.y = "Node") %>% 
+  filter(total > 0 & OutStrength > 0 & InStrength > 0)
+```
+
+### Total Relative Cases Linear Regression
+```{r}
+countyCasesWave2Metrics  %>%
+  ggplot(aes(x = log(InStrength), y = total)) + 
+  geom_point() + geom_smooth(method = 'lm')
+glm_wave2 <- lm(log(InStrength) ~ total, data = countyCasesWave2Metrics)
+hist(glm_wave2$residuals, main='Wave 2 Residuals', xlab='Residual', col='light grey', right=F)
+plot(glm_wave2$fitted.values, glm_wave2$residuals, xlab= 'Fitted Values', ylab='Residuals', main='Residual Plot', pch=20) + 
+  abline(h=0, col='red') 
+summary(glm_wave2)
+
+countyCasesWave2Metrics  %>% arrange(desc(total))
+```
+
+### Date Diff Linear Regression
+```{r}
+maxDateWave2Metrics  %>%
+  ggplot(aes(x = log(OutStrength), y = dateDiff)) + 
+  geom_point() + geom_smooth(method = 'lm')
+glm_wave2 <- lm(log(OutStrength) ~ dateDiff, data = maxDateWave2Metrics)
+hist(glm_wave2$residuals, main='Wave 2 Residuals', xlab='Residual', col='light grey', right=F)
+plot(glm_wave2$fitted.values, glm_wave2$residuals, xlab= 'Fitted Values', ylab='Residuals', main='Residual Plot', pch=20) + 
+  abline(h=0, col='red') 
+summary(glm_wave2)
+```
+
+### Peak Height Linear Regression
+```{r}
+maxDateWave2Metrics  %>%
+  ggplot(aes(x = log(OutStrength), y = peakHeight)) + 
+  geom_point() + geom_smooth(method = 'lm')
+glm_wave2 <- lm(log(OutStrength) ~ peakHeight, data = maxDateWave2Metrics)
+hist(glm_wave2$residuals, main='Wave 2 Residuals', xlab='Residual', col='light grey', right=F)
+plot(glm_wave2$fitted.values, glm_wave2$residuals, xlab= 'Fitted Values', ylab='Residuals', main='Residual Plot', pch=20) + 
+  abline(h=0, col='red') 
+summary(glm_wave2)
+```
+
+### Full dataframe with all metrics
+```{r}
+diseaseBurden2 <- maxDateWave2Metrics  %>% merge(countyCasesWave2Metrics %>% select(Fips, total), by = 'Fips') %>%
+  merge(early_warning2_metrics %>% select(Fips, daysUntilWarning), by = 'Fips')
+```
+
+### Full dataframe with all metrics
+```{r}
+# wave 3 four metrics calculations
+edgeListThirdWave <- edgeListComplete %>% filter(Week >= as.Date('2021-06-20'), Week <= as.Date('2021-11-20'))
+graphWave3 <- edgeListThirdWave %>% as_tibble() %>% select(Origin,Dest,Visits) %>% group_by(Origin,Dest) %>% summarise_each(sum) %>% filter(Origin != Dest) %>%
+  networkCreationDW()
+
+statsWave3 <- nodeStatsDW(graphWave3)
+
+# wave 3 dataframe
+countyCasesWave3 <- fipsCases %>% filter(Date >= as.Date('2021-06-20'), Date <= as.Date('2021-11-20'))
+relCountyCasesWave3 <- merge(countyCasesWave3, fips_population, by.x = "Fips", by.y = "Fips") %>%
+  mutate(relCases = Cases / Population)
+
+```
+
+### Outlier Correction
+```{r}
+# creating dataframe accounting for outliers
+# finding upper bound
+Q1_wave3 <- aggregate(relCases~Fips,relCountyCasesWave3, FUN = quantile, probs = 0.25) %>% select(relCases)
+Q3_wave3 <- aggregate(relCases~Fips,relCountyCasesWave3, FUN = quantile, probs = 0.75) %>% select(relCases)
+IQR_wave3 <- Q3_wave3 - Q1_wave3
+upperBound_wave3 <- Q3_wave3 + (1.5 * IQR_wave3)
+counties3 <- Fips_Codes %>% select(County)
+counties3['upperBound'] <- upperBound_wave3
+
+
+# merge upper bound with case dataset
+upperBoundWave3Data <- merge(relCountyCasesWave3, counties3, by.x = "County", by.y = "County")
+
+# if case is an outlier, label it NA
+upperBoundWave3Data['upper'] <- ifelse(upperBoundWave3Data$relCases > upperBoundWave3Data$upperBound, NA, upperBoundWave3Data$relCases)
+upperBoundWave3Data['lower'] <- ifelse(upperBoundWave3Data$relCases > upperBoundWave3Data$upperBound, NA, upperBoundWave3Data$relCases)
+
+# replace outliers with average of datapoint above and datapoint after
+outliers3_down <- upperBoundWave3Data %>% arrange(County, Date) %>% 
+  fill(lower, .direction = "down") %>% select(lower, Date, Fips) 
+
+outliers3_up <- upperBoundWave3Data %>% arrange(County, Date) %>% 
+  fill(upper, .direction = "up") %>% select(upper, Date, Fips)
+
+# getting the average of upper and lower
+outliers3_down['relCasesCorrected'] <- (outliers3_down$lower + outliers3_up$upper) / 2
+
+# get relative average 14 value
+outlierK3 <- outliers3_down %>% group_by(Fips) %>%
+  mutate(rel_average_14 = rollmean(relCasesCorrected, k = 14, fill = NA))
+```
+
+### View outlier corrected dataframe
+```{r}
+outlierK3 %>%
+  ggplot(aes(x = Date, y = rel_average_14, color = Fips, alpha = .5)) + 
+  geom_line()
+```
+
+### Early Warning
+```{r}
+start <- outlierK3  %>% filter(Date == as.Date('2021-06-26')) %>% select(Fips, baseline = rel_average_14)
+
+norm_outlierK3 <- outlierK3 %>% left_join(start) %>% mutate(normalize = rel_average_14 - baseline) %>% 
+  filter(normalize > 0)
+
+threshold3 <- mean(norm_outlierK3$normalize, na.rm = TRUE) * .10
+
+early_warning3 <- norm_outlierK3 %>% mutate(warning = (normalize > threshold3)) %>%
+  filter(warning == TRUE) %>% group_by(Fips) %>% summarize(earlywarning = min(Date))
+
+early_warning3['daysUntilWarning'] <- as.numeric(as.Date(early_warning3$earlywarning) - as.Date('2021-06-20'))
+early_warning3 <- early_warning3 %>% left_join(Fips_Codes, by = 'Fips')
+early_warning3_metrics <- merge(early_warning3, statsWave3, by.x = "Fips", by.y = "Node") %>%
+  filter(daysUntilWarning > 14 & OutStrength > 0)
+
+early_warning3_metrics %>%
+  ggplot(aes(x = log(OutStrength), y = daysUntilWarning)) + 
+  geom_point() + geom_smooth(method = 'lm')
+
+glm_wave3 <- lm(log(OutStrength) ~ daysUntilWarning, data=early_warning3_metrics)
+hist(glm_wave3$residuals, main='Wave 3 Residuals', xlab='Residual', col='light grey', right=F)
+plot(glm_wave3$fitted.values, glm_wave3$residuals, xlab= 'Fitted Values', ylab='Residuals', main='Residual Plot', pch=20) + 
+  abline(h=0, col='red') 
+summary(glm_wave3)
+```
+
+### Calculate Peak Height and Date diff
+```{r}
+# peak height with fips, county, and date of occurance
+maxDateWave3 <- outlierK3 %>% select('Date', 'Fips', 'rel_average_14') %>% 
+  group_by(Fips) %>%
+  slice_max(rel_average_14) %>% slice_min(Date)
+
+# find the days until where the peak occurs
+start <- as.Date('2021-06-20')
+dates <- as.Date(maxDateWave3$Date)
+diff <- dates - start
+maxDateWave3['dateDiff'] <- as.numeric(diff)
+
+# final dataframe with rel_average_14 peak height, days until peak, and wave metrics
+maxDateWave3Metrics <- merge(maxDateWave3, statsWave3, by.x = "Fips", by.y = "Node") %>%
+  transform(dateDiff = as.numeric(dateDiff)) %>% filter(dateDiff > 14) %>% filter(rel_average_14 > 0) %>% filter(rel_average_14 < .01) %>% 
+  rename(peakHeight = rel_average_14)
+```
+
+### Total Relative Cases
+```{r}
+# total relative cases per county with metrics
+relCasesSummedWave3 <- outlierK3 %>% select(Fips, rel_average_14) %>% mutate(Fips = as.factor(Fips)) %>%
+  group_by(Fips) %>% arrange(Fips) %>% drop_na() %>% summarize(total = sum(rel_average_14))
+countyCasesWave3Metrics <- merge(relCasesSummedWave3, statsWave3, by.x = "Fips", by.y = "Node") %>%
+  filter(total > 0 & OutStrength > 0 & total < .9)
+```
+
+### Total Relative Cases Linear Regression
+```{r}
+countyCasesWave3Metrics  %>%
+  ggplot(aes(x = log(OutStrength), y = total)) + 
+  geom_point() + geom_smooth(method = 'lm')
+glm_wave3 <- lm(log(OutStrength) ~ total, data = countyCasesWave3Metrics)
+hist(glm_wave3$residuals, main='Wave 3 Residuals', xlab='Residual', col='light grey', right=F)
+plot(glm_wave3$fitted.values, glm_wave3$residuals, xlab= 'Fitted Values', ylab='Residuals', main='Residual Plot', pch=20) + 
+  abline(h=0, col='red') 
+summary(glm_wave3)
+```
+
+### Date Diff Linear Regression
+```{r}
+maxDateWave3Metrics  %>%
+  ggplot(aes(x = log(OutStrength), y = dateDiff)) + 
+  geom_point() + geom_smooth(method = 'lm')
+glm_wave3 <- lm(log(OutStrength) ~ dateDiff, data = maxDateWave3Metrics)
+hist(glm_wave3$residuals, main='Wave 3 Residuals', xlab='Residual', col='light grey', right=F)
+plot(glm_wave3$fitted.values, glm_wave3$residuals, xlab= 'Fitted Values', ylab='Residuals', main='Residual Plot', pch=20) + 
+  abline(h=0, col='red') 
+summary(glm_wave3)
+```
+
+### Peak Height Linear Regression
+```{r}
+maxDateWave3Metrics  %>%
+  ggplot(aes(x = log(OutStrength), y = peakHeight)) + 
+  geom_point() + geom_smooth(method = 'lm')
+glm_wave3 <- lm(log(OutStrength) ~ peakHeight, data = maxDateWave3Metrics)
+hist(glm_wave3$residuals, main='Wave 3 Residuals', xlab='Residual', col='light grey', right=F)
+plot(glm_wave3$fitted.values, glm_wave3$residuals, xlab= 'Fitted Values', ylab='Residuals', main='Residual Plot', pch=20) + 
+  abline(h=0, col='red') 
+summary(glm_wave3)
+```
+
+### Full dataframe with all metrics
+```{r}
+diseaseBurden3 <- maxDateWave3Metrics  %>% merge(countyCasesWave3Metrics %>% select(Fips, total), by = 'Fips') %>%
+  merge(early_warning3_metrics %>% select(Fips, daysUntilWarning), by = 'Fips') %>% merge(fips, by = 'Fips')
+```
+
+### Combine outlier corrected dataframes
+```{r}
+time_series <- rbind(outlierK1, outlierK2)
+time_series <- rbind(time_series, outlierK3)
+```
+
+### View outlier corrected dataframe
+```{r}
+time_series %>%
+  ggplot(aes(x = Date, y = rel_average_14, color = Fips, alpha = .5)) + 
+  geom_line()
+```
+
+### Combine disease metrics
+```{r}
+diseaseBurdenMetrics <- rbind(diseaseBurden1, diseaseBurden2)
+diseaseBurdenMetrics <- rbind(diseaseBurdenMetrics, diseasenBurden3)
+```
