@@ -2,17 +2,7 @@
 
 #  Description: Creates a class stack by utilizing a linked list.  
 
-#  Student Name: Rachel Muralitharan
 
-#  Student UT EID: rsm3256
-
-#  Course Name: CS 313E
-
-#  Unique Number: 86439
-
-#  Date Created: 6/20/2022
-
-#  Date Last Modified: 6/20/2022
 import time
 
 class Link(object):
@@ -192,3 +182,4 @@ def main():
 
 main()
 # Time Complexity: As this code only has single line statements and singular loops, the time complexity of the main method is O(n)
+
